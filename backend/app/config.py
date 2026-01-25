@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     
     # Server
     host: str = "0.0.0.0"
-    port: int = 8001
+    port: int = Field(default=8000, validation_alias="PORT")
 
     
     @field_validator("openai_api_key", "gemini_api_key", mode="before")
