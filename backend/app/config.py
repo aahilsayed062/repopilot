@@ -10,13 +10,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-# Explicitly load .env from project root
-env_path = Path(__file__).parent.parent.parent / ".env"
-load_dotenv(env_path)
+def _resolve_project_root() -> Path:
+    """Resolve repo root for local and container deployments."""
+    current = Path(__file__).resolve()
+    backend_root = current.parents[1]
+    if backend_root.name == "backend":
+        return backend_root.parent
+    return backend_root
 
-# Get project root (parent of backend/)
-# __file__ = backend/app/config.py -> .parent = app -> .parent = backend -> .parent = repopilot
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+PROJECT_ROOT = _resolve_project_root()
+
+# Explicitly load .env from project root
+env_path = PROJECT_ROOT / ".env"
+load_dotenv(env_path)
 
 
 class Settings(BaseSettings):
