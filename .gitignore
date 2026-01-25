@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+backend.log
+models_list.txt
+final_verification_8001.txt
+
+# Node
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+
+# RepoPilot Data
+data/
+!data/.gitkeep
+
+# Gemini/Antigravity Artifacts (optional to exclude, but usually kept local)
+.gemini/
+.agent/
+brain/

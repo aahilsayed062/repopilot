@@ -1,0 +1,37 @@
+[
+    {
+        "id": "q1",
+        "question": "How do I validate a data structure?",
+        "expected_files": [
+            "schema.py"
+        ]
+    },
+    {
+        "id": "q2",
+        "question": "How do I utilize the And operator?",
+        "expected_files": [
+            "schema.py"
+        ]
+    },
+    {
+        "id": "q3",
+        "question": "How can I mark a key as optional?",
+        "expected_files": [
+            "schema.py"
+        ]
+    },
+    {
+        "id": "q4",
+        "question": "What happens if validation fails?",
+        "expected_files": [
+            "schema.py"
+        ]
+    },
+    {
+        "id": "q5",
+        "question": "Does it support regex validation?",
+        "expected_files": [
+            "schema.py"
+        ]
+    }
+]
