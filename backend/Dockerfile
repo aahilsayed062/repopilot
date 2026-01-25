@@ -26,4 +26,4 @@ ENV PORT=8000
 ENV DATA_DIR=/app/data
 
 # Run application using Python module which reads PORT from environment via config.py
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0"]
+CMD ["python", "run.py"]
