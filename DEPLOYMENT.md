@@ -13,10 +13,11 @@ This guide explains how to deploy both the frontend and backend of RepoPilot AI 
 2. Go to the **Settings** tab of the service.
 3. Set the **Root Directory** to `/backend`.
 4. Set the **Service Name** to `repopilot-backend`.
-5. In the **Variables** tab, add the following:
+5. In the **Deploy** tab, keep the default start command from `backend/railway.json` (`python run.py`).
+6. In the **Variables** tab, add the following:
    - `GEMINI_API_KEY`: Your Google Gemini API Key.
    - `DATA_DIR`: `/app/data`
-   - `PORT`: `8000` (or leave default)
+   - Do **not** set `PORT`; Railway injects a numeric value automatically.
 
 ### Frontend Service
 1. Click **New** -> **GitHub Repo** again and select the same repository.

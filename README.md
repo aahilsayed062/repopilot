@@ -124,12 +124,12 @@ repopilot/
 The backend is prepared for deployment on Render or Railway. 
 
 1. Connect your GitHub repository.
-2. Set the root directory if necessary (default is project root).
-3. The `Procfile` will automatically handle the start command.
-4. Set Environment Variables:
+2. Set the root directory to `/backend`.
+3. Use the default start command from `backend/railway.json` (`python run.py`).
+4. Do **not** set `PORT` manually; Railway injects a numeric value at runtime.
+5. Set Environment Variables:
     - `GEMINI_API_KEY`
     - `PYTHON_VERSION`: 3.11.0
-    - `PORT`: 8000
 
 ### Frontend (Vercel)
 The frontend is already configured for Vercel.
