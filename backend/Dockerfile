@@ -25,5 +25,6 @@ ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DATA_DIR=/app/data
 
-# Run application
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Make startup script executable and run it
+RUN chmod +x start.sh
+CMD ["./start.sh"]
