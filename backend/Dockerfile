@@ -25,6 +25,5 @@ ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DATA_DIR=/app/data
 
-# Make startup script executable and run it
-RUN chmod +x start.sh
-CMD ["./start.sh"]
+# Run application using Python module which reads PORT from environment via config.py
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0"]
