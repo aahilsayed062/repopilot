@@ -1,8 +1,31 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import {
+  Send,
+  Terminal,
+  FolderRoot,
+  FileCode,
+  ExternalLink,
+  Copy,
+  Check,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
+  MessageSquare,
+  Cpu,
+  Info,
+  ChevronRight,
+  Github
+} from "lucide-react";
 
-// Types
+// ============================================
+// TYPES
+// ============================================
+
 interface Citation {
   file_path: string;
   line_range: string;
@@ -22,7 +45,6 @@ interface Message {
   citations?: Citation[];
   confidence?: string;
   assumptions?: string[];
-  // Generation fields
   plan?: string;
   diffs?: FileDiff[];
   tests?: string;
@@ -38,12 +60,172 @@ interface RepoFile {
   file_path: string;
 }
 
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+const getLanguageColor = (lang: string): string => {
+  const colors: Record<string, string> = {
+    python: 'python',
+    javascript: 'javascript',
+    typescript: 'typescript',
+    rust: 'rust',
+    go: 'go',
+    java: 'java',
+    cpp: 'cpp',
+    c: 'c',
+    ruby: 'ruby',
+    php: 'php',
+  };
+  return colors[lang.toLowerCase()] || 'default';
+};
+
+const formatBytes = (bytes: number): string => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+// ============================================
+// SUB-COMPONENTS
+// ============================================
+
+const TypingIndicator = () => (
+  <motion.div
+    initial={{ opacity: 0, y: 10 }}
+    animate={{ opacity: 1, y: 0 }}
+    className="message message-assistant"
+  >
+    <div className="message-avatar">
+      <Cpu size={18} />
+    </div>
+    <div className="message-bubble">
+      <div className="typing-indicator">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+    </div>
+  </motion.div>
+);
+
+interface CodeBlockProps {
+  code: string;
+  language?: string;
+}
+
+const CodeBlock = ({ code, language = 'text' }: CodeBlockProps) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="code-block message-enter">
+      <div className="code-block-header">
+        <span className="code-block-lang">{language}</span>
+        <button
+          className={`code-copy-btn ${copied ? 'copied' : ''}`}
+          onClick={handleCopy}
+        >
+          {copied ? <><Check size={14} /> Copied!</> : <><Copy size={14} /> Copy</>}
+        </button>
+      </div>
+      <div className="code-block-content p-0">
+        <SyntaxHighlighter
+          language={language.toLowerCase()}
+          style={vscDarkPlus}
+          customStyle={{
+            margin: 0,
+            padding: '16px',
+            fontSize: '13px',
+            background: 'transparent',
+          }}
+        >
+          {code}
+        </SyntaxHighlighter>
+      </div>
+    </div>
+  );
+};
+
+interface CitationsProps {
+  citations: Citation[];
+}
+
+const Citations = ({ citations }: CitationsProps) => (
+  <div className="citations-container">
+    <div className="citations-title">
+      <ExternalLink size={12} />
+      Sources Used ({citations.length})
+    </div>
+    <div className="citations-list">
+      {citations.map((cit, i) => (
+        <motion.div
+          key={i}
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: i * 0.1 }}
+          className="citation-card"
+        >
+          <div className="citation-content">
+            <div className="citation-path">
+              {cit.file_path}{cit.line_range ? `:${cit.line_range}` : ''}
+            </div>
+            {cit.snippet && (
+              <div className="citation-snippet">"{cit.snippet}"</div>
+            )}
+          </div>
+        </motion.div>
+      ))}
+    </div>
+  </div>
+);
+
+interface DiffsProps {
+  diffs: FileDiff[];
+}
+
+const Diffs = ({ diffs }: DiffsProps) => (
+  <div className="citations-container">
+    <div className="citations-title">
+      <Terminal size={12} />
+      Proposed Changes ({diffs.length} files)
+    </div>
+    {diffs.map((diff, i) => (
+      <div key={i} className="code-block" style={{ marginTop: '8px' }}>
+        <div className="code-block-header">
+          <span className="code-block-lang">{diff.file_path}</span>
+        </div>
+        <div className="code-block-content">
+          {diff.diff.split('\n').map((line, j) => {
+            let className = 'diff-line context';
+            if (line.startsWith('+')) className = 'diff-line added';
+            else if (line.startsWith('-')) className = 'diff-line removed';
+            return <div key={j} className={className}>{line}</div>;
+          })}
+        </div>
+      </div>
+    ))}
+  </div>
+);
+
+// ============================================
+// MAIN COMPONENT
+// ============================================
+
 export default function Home() {
   // Repo State
   const [repoUrl, setRepoUrl] = useState("https://github.com/keleshev/schema");
   const [repoId, setRepoId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [status, setStatus] = useState<string>("");
+  const [status, setStatus] = useState<string>("Initializing...");
+  const [statusType, setStatusType] = useState<'default' | 'success' | 'error' | 'warning'>('default');
   const [isIndexed, setIsIndexed] = useState(false);
   const [stats, setStats] = useState<RepoStats | null>(null);
   const [files, setFiles] = useState<RepoFile[]>([]);
@@ -53,22 +235,43 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
 
+  // Refs
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isChatLoading]);
+
   // Check Health
   useEffect(() => {
-    fetch("/api/health")
-      .then(r => r.json())
-      .then(d => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch("/api/health");
+        const d = await res.json();
         if (d.mock_mode) {
-          setStatus("⚠️ SYSTEM IN MOCK MODE (No API Keys Found)");
+          setStatus("System: Mock Mode (No API Keys)");
+          setStatusType('warning');
+        } else {
+          setStatus("System: Online & Ready");
+          setStatusType('success');
         }
-      })
-      .catch(() => setStatus("❌ BACKEND UNREACHABLE"));
+      } catch (e) {
+        setStatus("System: Offline (Backend Unreachable)");
+        setStatusType('error');
+      }
+    };
+    checkHealth();
   }, []);
 
   // Load Repo
   const loadRepo = async () => {
+    if (!repoUrl.trim()) return;
+
     setIsLoading(true);
     setStatus("Loading repository...");
+    setStatusType('default');
+
     try {
       const res = await fetch("/api/repo/load", {
         method: "POST",
@@ -77,17 +280,20 @@ export default function Home() {
       });
       const data = await res.json();
 
-      if (!res.ok) throw new Error(data.detail || "Failed to load");
+      if (!res.ok) throw new Error(data.detail || "Failed to load repo");
 
       setRepoId(data.repo_id);
       setStats(data.stats);
-      setStatus(`Loaded ${data.repo_name} @ ${data.commit_hash.substring(0, 8)}`);
+      setStatus(`Success: ${data.repo_name} loaded`);
+      setStatusType('success');
 
       // Auto-index
       await indexRepo(data.repo_id);
 
-    } catch (e: any) {
-      setStatus(`Error: ${e.message}`);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setStatus(`Error: ${error.message}`);
+      setStatusType('error');
     } finally {
       setIsLoading(false);
     }
@@ -95,7 +301,9 @@ export default function Home() {
 
   // Index Repo
   const indexRepo = async (id: string) => {
-    setStatus("Indexing repository...");
+    setStatus("Indexing code chunks...");
+    setStatusType('default');
+
     try {
       const res = await fetch("/api/repo/index", {
         method: "POST",
@@ -104,10 +312,11 @@ export default function Home() {
       });
       const data = await res.json();
 
-      if (!res.ok) throw new Error(data.detail || "Failed to index");
+      if (!res.ok) throw new Error(data.detail || "Failed index");
 
       setIsIndexed(true);
-      setStatus(`Ready! Indexed ${data.chunk_count} chunks.`);
+      setStatus(`Search Ready • ${data.chunk_count} code chunks`);
+      setStatusType('success');
 
       // Get files
       const statusRes = await fetch(`/api/repo/status?repo_id=${id}&include_files=true`);
@@ -116,23 +325,24 @@ export default function Home() {
         setFiles(statusData.files || []);
       }
 
-    } catch (e: any) {
-      setStatus(`Error indexing: ${e.message}`);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setStatus(`Error: ${error.message}`);
+      setStatusType('error');
     }
   };
 
-  // Chat
+  // Send Message
   const sendMessage = async () => {
     if (!input.trim() || !repoId) return;
 
-    const userMsg = { role: "user" as const, content: input };
+    const userMsg: Message = { role: "user", content: input };
     setMessages(prev => [...prev, userMsg]);
     const currentInput = input;
     setInput("");
     setIsChatLoading(true);
 
     try {
-      // Check for /generate command
       if (currentInput.startsWith("/generate ")) {
         const request = currentInput.replace("/generate ", "");
         const res = await fetch("/api/chat/generate", {
@@ -142,16 +352,21 @@ export default function Home() {
         });
         const data = await res.json();
 
-        if (!res.ok) throw new Error(data.detail || "Failed to generate");
+        if (!res.ok) throw new Error(data.detail || "Generation failed");
 
         setMessages(prev => [...prev, {
           role: "assistant",
-          content: `**Plan**:\n${data.plan}\n\n**Generated Tests**:\n\`\`\`python\n${data.tests}\n\`\`\``,
+          content: data.plan || "I've generated a set of changes based on your request. Review the plan and diffs below:",
           diffs: data.diffs,
-          citations: data.citations?.map((c: string) => ({ file_path: c, line_range: "", snippet: "", why: "Context" }))
+          tests: data.tests,
+          citations: data.citations?.map((c: string) => ({
+            file_path: c,
+            line_range: "",
+            snippet: "",
+            why: "Analysis context"
+          }))
         }]);
       } else {
-        // Normal chat
         const res = await fetch("/api/chat/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -159,7 +374,7 @@ export default function Home() {
         });
         const data = await res.json();
 
-        if (!res.ok) throw new Error(data.detail || "Failed to get answer");
+        if (!res.ok) throw new Error(data.detail || "Query failed");
 
         setMessages(prev => [...prev, {
           role: "assistant",
@@ -170,188 +385,298 @@ export default function Home() {
         }]);
       }
 
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const error = e as Error;
       setMessages(prev => [...prev, {
         role: "assistant",
-        content: `Error: ${e.message}`
+        content: `Something went wrong: ${error.message}`
       }]);
     } finally {
       setIsChatLoading(false);
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  // ============================================
+  // RENDER
+  // ============================================
+
   return (
-    <main className="min-h-screen p-8 bg-gray-50 text-gray-900 font-sans">
-      <div className="max-w-6xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">
-            RepoPilot AI
-          </h1>
-          <div className="text-sm text-gray-500">
-            {status}
+    <div className="app-layout">
+      {/* Ambient Background */}
+      <div className="ambient-glow" />
+
+      {/* Header */}
+      <motion.header
+        initial={{ y: -20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        className="glass-header"
+      >
+        <div className="header-brand">
+          <div className="header-logo">
+            <Cpu size={22} />
           </div>
+          <h1 className="header-title">RepoPilot</h1>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Panel: Repo Control */}
-          <div className="lg:col-span-1 space-y-4">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-              <h2 className="text-lg font-semibold mb-4">Repository</h2>
-              <div className="space-y-3">
-                <input
-                  type="text"
-                  value={repoUrl}
-                  onChange={(e) => setRepoUrl(e.target.value)}
-                  placeholder="https://github.com/..."
-                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
-                />
-                <button
-                  onClick={loadRepo}
-                  disabled={isLoading}
-                  className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
-                >
-                  {isLoading ? "Loading..." : "Load Repository"}
-                </button>
-              </div>
+        <div className={`header-status ${statusType}`}>
+          {statusType === 'success' && <CheckCircle2 size={14} className="animate-pulse" />}
+          {statusType === 'error' && <AlertCircle size={14} />}
+          {statusType === 'warning' && <Info size={14} />}
+          {statusType === 'default' && <Loader2 size={14} className="animate-spin" />}
+          {status}
+        </div>
 
-              {stats && (
-                <div className="mt-6 space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Files</span>
-                    <span className="font-medium">{stats.total_files}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Size</span>
-                    <span className="font-medium">{(stats.total_size_bytes / 1024 / 1024).toFixed(2)} MB</span>
-                  </div>
-                  <div className="pt-2 border-t">
-                    <div className="text-xs text-gray-400 mb-1">Languages</div>
-                    <div className="flex flex-wrap gap-1">
-                      {Object.keys(stats.languages).slice(0, 5).map(lang => (
-                        <span key={lang} className="px-2 py-1 bg-gray-100 rounded text-xs text-gray-600">
-                          {lang}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
+        <div className="flex gap-4">
+          <a href="https://github.com/repopilot" target="_blank" className="btn-ghost">
+            <Github size={18} />
+          </a>
+        </div>
+      </motion.header>
+
+      {/* Main Content */}
+      <div className="main-container">
+        {/* Sidebar */}
+        <aside className="sidebar">
+          {/* Repository Section */}
+          <motion.section
+            initial={{ x: -20, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            transition={{ delay: 0.1 }}
+            className="sidebar-section"
+          >
+            <h3 className="sidebar-title">
+              <Github size={14} />
+              Connection
+            </h3>
+            <div className="repo-input-group">
+              <input
+                type="text"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                placeholder="https://github.com/user/repo"
+                className="repo-input"
+                onKeyDown={(e) => e.key === 'Enter' && loadRepo()}
+              />
+              <button
+                onClick={loadRepo}
+                disabled={isLoading}
+                className="btn btn-primary btn-full shadow-glow-coral"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Connecting...
+                  </>
+                ) : (
+                  'Connect Repository'
+                )}
+              </button>
             </div>
 
-            {/* File Browser (Mini) */}
+            {/* Stats */}
+            {stats && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="mt-4"
+              >
+                <div className="stats-grid">
+                  <div className="stat-card">
+                    <div className="stat-value">{stats.total_files}</div>
+                    <div className="stat-label">Files</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-value">{formatBytes(stats.total_size_bytes)}</div>
+                    <div className="stat-label">Size</div>
+                  </div>
+                </div>
+
+                <div className="language-tags">
+                  {Object.entries(stats.languages)
+                    .sort(([, a], [, b]) => b - a)
+                    .slice(0, 5)
+                    .map(([lang, count]) => (
+                      <span key={lang} className="language-tag">
+                        <span className={`language-dot ${getLanguageColor(lang)}`} />
+                        {lang}
+                      </span>
+                    ))}
+                </div>
+              </motion.div>
+            )}
+          </motion.section>
+
+          {/* Files Section */}
+          <AnimatePresence>
             {files.length > 0 && (
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-96 flex flex-col">
-                <h2 className="text-lg font-semibold mb-4">Files</h2>
-                <div className="flex-1 overflow-y-auto space-y-1 text-sm">
-                  {files.map((f, i) => (
-                    <div key={i} className="truncate text-gray-600 hover:text-blue-600 cursor-default" title={f.file_path}>
-                      {f.file_path}
+              <motion.section
+                initial={{ x: -20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -20, opacity: 0 }}
+                transition={{ delay: 0.2 }}
+                className="sidebar-section"
+              >
+                <h3 className="sidebar-title">
+                  <FolderRoot size={14} />
+                  Code Explorer
+                </h3>
+                <div className="file-list">
+                  {files.slice(0, 40).map((f, i) => (
+                    <div key={i} className="file-item group cursor-pointer" title={f.file_path}>
+                      <FileCode size={14} className="group-hover:text-brand-periwinkle transition-colors" />
+                      <span className="truncate">{f.file_path.split('/').pop()}</span>
                     </div>
                   ))}
+                  {files.length > 40 && (
+                    <div className="file-item text-tertiary italic text-[11px] justify-center pt-2">
+                      + {files.length - 40} additional files
+                    </div>
+                  )}
                 </div>
+              </motion.section>
+            )}
+          </AnimatePresence>
+
+          {/* Tip Box */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.4 }}
+            className="tip-box"
+          >
+            <strong>Pro Tip:</strong> Use <code>/generate</code> followed by a feature request to see RepoPilot create code patches instantly.
+          </motion.div>
+        </aside>
+
+        {/* Chat Area */}
+        <main className="chat-area">
+          <div className="chat-header">
+            <h2 className="chat-header-title">
+              <MessageSquare size={18} />
+              AI Assistant
+            </h2>
+            {isIndexed && (
+              <div className="badge badge-success text-[10px] py-1">
+                KNOWLEDGE BASE ACTIVE
               </div>
             )}
-
-            <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-sm text-blue-800">
-              <strong>Tip:</strong> Use <code>/generate &lt;request&gt;</code> to create code patches.
-            </div>
           </div>
 
-          {/* Right Panel: Chat */}
-          <div className="lg:col-span-2 flex flex-col h-[calc(100vh-12rem)] bg-white rounded-xl shadow-sm border border-gray-100">
-            <div className="p-4 border-b">
-              <h2 className="text-lg font-semibold">Assistant</h2>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-6">
-              {messages.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-2">
-                  <div className="p-4 bg-gray-50 rounded-full">
-                    💬
-                  </div>
-                  <p>Load a repository and start asking questions.</p>
-                </div>
-              )}
-
-              {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] rounded-2xl p-4 ${msg.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-50 text-gray-800'
-                    }`}>
-                    <div className="whitespace-pre-wrap has-markdown">{msg.content}</div>
-
-                    {/* Diffs */}
-                    {msg.diffs && msg.diffs.length > 0 && (
-                      <div className="mt-4 space-y-2">
-                        <div className="text-xs font-semibold opacity-70">Proposed Changes</div>
-                        {msg.diffs.map((diff, k) => (
-                          <div key={k} className="text-xs bg-white p-2 rounded border border-gray-200 overflow-x-auto">
-                            <div className="font-mono font-bold text-gray-700 mb-1">{diff.file_path}</div>
-                            <pre className="text-green-700 font-mono">{diff.diff}</pre>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Citations */}
-                    {msg.citations && msg.citations.length > 0 && (
-                      <div className="mt-4 pt-4 border-t border-gray-200/50 space-y-2">
-                        <div className="text-xs font-semibold opacity-70">Citations</div>
-                        {msg.citations.map((cit, j) => (
-                          <div key={j} className="text-xs bg-white/50 p-2 rounded border border-gray-200/50">
-                            <div className="font-mono text-blue-600 mb-1">
-                              {cit.file_path}{cit.line_range ? `:${cit.line_range}` : ''}
-                            </div>
-                            {cit.snippet && <div className="opacity-80 italic">"{cit.snippet}"</div>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Meta */}
-                    {msg.role === 'assistant' && msg.confidence && (
-                      <div className="mt-2 text-[10px] opacity-50 flex gap-2">
-                        <span>Confidence: {msg.confidence}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-
-              {isChatLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-gray-50 rounded-2xl p-4 text-gray-500 animate-pulse">
-                    Generating answer...
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 border-t">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                  placeholder={isIndexed ? "Ask a question or /generate <request>" : "Load and index a repo first..."}
-                  disabled={!isIndexed || isChatLoading}
-                  className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-50"
-                />
-                <button
-                  onClick={sendMessage}
-                  disabled={!isIndexed || isChatLoading}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+          {/* Messages */}
+          <div className="messages-container">
+            <AnimatePresence mode="popLayout">
+              {messages.length === 0 ? (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  key="empty"
+                  className="empty-state"
                 >
-                  Send
-                </button>
-              </div>
-            </div>
+                  <div className="empty-state-icon">
+                    <MessageSquare size={36} />
+                  </div>
+                  <p className="empty-state-text">
+                    Welcome to RepoPilot. Connect a repository above to start exploring your code with AI.
+                  </p>
+                  <div className="flex gap-2 mt-4">
+                    {['Explain the architecture', 'How do I add a new endpoint?', 'Find vulnerabilities'].map(q => (
+                      <button
+                        key={q}
+                        onClick={() => setInput(q)}
+                        className="btn-ghost text-xs border border-white/5 rounded-full px-4"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              ) : (
+                messages.map((msg, i) => (
+                  <motion.div
+                    layout
+                    key={i}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ type: "spring", damping: 20, stiffness: 100 }}
+                    className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
+                  >
+                    {msg.role === 'assistant' && (
+                      <div className="message-avatar">
+                        <Cpu size={18} />
+                      </div>
+                    )}
+                    <div className="message-bubble">
+                      <div className="message-content">{msg.content}</div>
+
+                      {/* Code in response */}
+                      {msg.tests && (
+                        <CodeBlock code={msg.tests} language="python" />
+                      )}
+
+                      {/* Diffs */}
+                      {msg.diffs && msg.diffs.length > 0 && (
+                        <Diffs diffs={msg.diffs} />
+                      )}
+
+                      {/* Citations */}
+                      {msg.citations && msg.citations.length > 0 && (
+                        <Citations citations={msg.citations} />
+                      )}
+
+                      {/* Confidence */}
+                      {msg.role === 'assistant' && msg.confidence && (
+                        <div className="message-meta">
+                          <span className={`meta-badge ${msg.confidence.toLowerCase()} flex items-center gap-1`}>
+                            <Info size={10} />
+                            Confidence: {msg.confidence}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                ))
+              )}
+
+              {/* Typing Indicator */}
+              {isChatLoading && <TypingIndicator key="typing" />}
+            </AnimatePresence>
+
+            <div ref={messagesEndRef} />
           </div>
-        </div>
+
+          {/* Input Area */}
+          <div className="input-container">
+            <motion.div
+              layout
+              className="input-wrapper"
+            >
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={isIndexed ? "Ask anything about your code..." : "Connecting to repository..."}
+                disabled={!isIndexed || isChatLoading}
+                className="chat-input"
+              />
+              <button
+                onClick={sendMessage}
+                disabled={!isIndexed || isChatLoading || !input.trim()}
+                className="send-button"
+              >
+                <Send size={20} />
+              </button>
+            </motion.div>
+          </div>
+        </main>
       </div>
-    </main>
+    </div>
   );
 }
