@@ -19,7 +19,9 @@ import {
   Cpu,
   Info,
   ChevronRight,
-  Github
+  Github,
+  Menu,
+  X
 } from "lucide-react";
 
 // ============================================
@@ -235,6 +237,9 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
 
+  // UI State
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -419,10 +424,17 @@ export default function Home() {
         className="glass-header"
       >
         <div className="header-brand">
+          <button
+            className="md:hidden p-2 -ml-2 text-text-secondary hover:text-text-primary transition-colors"
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            aria-label="Toggle Menu"
+          >
+            {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
           <div className="header-logo">
             <Cpu size={22} />
           </div>
-          <h1 className="header-title">RepoPilot</h1>
+          <h1 className="header-title hidden sm:block">RepoPilot</h1>
         </div>
 
         <div className={`header-status ${statusType}`}>
@@ -442,8 +454,21 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="main-container">
+        {/* Backdrop for mobile */}
+        <AnimatePresence>
+          {isSidebarOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsSidebarOpen(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[140] md:hidden"
+            />
+          )}
+        </AnimatePresence>
+
         {/* Sidebar */}
-        <aside className="sidebar">
+        <aside className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
           {/* Repository Section */}
           <motion.section
             initial={{ x: -20, opacity: 0 }}
