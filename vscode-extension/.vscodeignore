@@ -1,0 +1,11 @@
+.git
+.gitignore
+.vscode-test
+.DS_Store
+src/
+tsconfig.json
+webpack.config.js
+node_modules/
+out/
+*.log
+*.vsix
