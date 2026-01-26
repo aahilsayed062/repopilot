@@ -32,7 +32,17 @@ class LLMService:
                 model_name = f"models/{model_name}"
             self.gemini_model_name = model_name
         elif settings.openai_api_key:
-            self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+            self.openai_client = AsyncOpenAI(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url
+            )
+
+    def _supports_openai_json_mode(self) -> bool:
+        """Return True if the configured OpenAI endpoint supports response_format JSON."""
+        base_url = (settings.openai_base_url or "").lower()
+        if not base_url:
+            return True
+        return "openai.com" in base_url
             
     async def chat_completion(
         self,
@@ -71,7 +81,8 @@ class LLMService:
         }
         
         if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+            if self._supports_openai_json_mode():
+                kwargs["response_format"] = {"type": "json_object"}
             
         response = await self.openai_client.chat.completions.create(**kwargs)
         return response.choices[0].message.content

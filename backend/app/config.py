@@ -37,13 +37,13 @@ class Settings(BaseSettings):
     )
     
     # App info
-
     app_name: str = "RepoPilot AI"
     app_version: str = "0.1.0"
     debug: bool = False
     
     # OpenAI
     openai_api_key: Optional[str] = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openai_base_url: Optional[str] = Field(default=None, validation_alias="OPENAI_BASE_URL")
 
     openai_embedding_model: str = "text-embedding-ada-002"
     openai_chat_model: str = "gpt-4o"
@@ -65,11 +65,11 @@ class Settings(BaseSettings):
     # Chunking
     code_chunk_lines: int = 150
     code_chunk_overlap: int = 20
-    doc_chunk_tokens: int = 1000
+    doc_chunk_tokens: int = 500
     doc_chunk_overlap: int = 100
     
     # Retrieval
-    top_k: int = 8
+    top_k: int = 3
     
     # Server
     host: str = "0.0.0.0"

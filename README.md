@@ -1,144 +1,111 @@
-# RepoPilot AI
+# 🚀 RepoPilot AI
 
-A repository-grounded engineering assistant that provides answers, generates code, and writes tests **only when supported by evidence** from the target codebase.
+<div align="center">
 
-## Core Principle
+![RepoPilot Banner](https://img.shields.io/badge/RepoPilot-Engineering_Tool-6366f1?style=for-the-badge&logo=github)
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-14+-000000?style=flat-square&logo=next.js&logoColor=white)
+![LLM Support](https://img.shields.io/badge/LLM-Groq_%2F_OpenAI-f55036?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
-**Grounded-first, generate-second.**
+**A retrieval-augmented engineering tool that maps your repository, understands context, and helps you ship faster.**
 
-All answers are grounded in repository evidence. If evidence is missing or conflicting, the system refuses safely and explains what's missing.
+[Features](#-features) • [Quick Start](#-quick-start) • [Architecture](#-architecture) • [Deployment](#-deployment)
 
-## Features
+</div>
 
-- 🔍 **Repo Ingestion** - Load from GitHub URL or local path
-- 📊 **Smart Indexing** - Chunking + embeddings + vector store
-- 💬 **Grounded Q&A** - Answers with citations (file path + line range)
-- 🧩 **Query Decomposition** - Breaks complex questions into sub-queries
-- ✨ **Code Generation** - Style-matched code + tests (only on explicit request)
-- 🛡️ **Safe Refusal** - Refuses when evidence is missing or conflicting
+---
 
-## Quick Start
+## 💡 Core Principle
+
+> **"Grounded-first, generate-second."**
+
+Unlike generic chat tools, RepoPilot AI**indexes your actual codebase**. All answers are grounded in repository evidence (file citations). If evidence is missing, it refuses to hallucinate.
+
+## ✨ Features
+
+- 🔍 **Smart Ingestion**: Clone & analyze any GitHub repo or local path.
+- ⚡ **Groq-Powered Speed**: Uses **Llama 3 70B** on Groq for sub-second reasoning.
+- 🧩 **Evidence-Based Q&A**: Every answer cites specific files and line numbers.
+- 🛠️ **Code Generation**: Generates context-aware diffs and unit tests.
+- 🛡️ **Safe Fallback**: Validates inputs and refuses vague/unsafe requests.
+
+## 🏗️ Architecture
+
+- **Backend**: FastAPI (Python) with `chromadb` (Vector Store) and `langchain`.
+- **Frontend**: Next.js 14 (TypeScript) with Tailwind CSS.
+- **AI Engine**: Groq API (Llama 3) + Mock Embeddings (Hybrid retrieval).
+- **Deployment**: Optimized for Railway (Monorepo support).
+
+## 🚀 Quick Start
 
 ### Prerequisites
-
 - Python 3.11+
-- Node.js 18+ (for frontend)
-- Git
+- Node.js 18+
+- [Groq API Key](https://console.groq.com) (Free)
 
-### Setup
-
+### 1. Setup
 ```bash
-# Clone the repository
+# Clone
 git clone <repo-url>
 cd repopilot
 
-# Create virtual environment
+# Setup Virtual Environment
 python -m venv venv
+.\venv\Scripts\activate  # Windows
+# source venv/bin/activate  # Mac/Linux
 
-# Activate (Windows)
-.\venv\Scripts\activate
-
-# Activate (Unix/macOS)
-source venv/bin/activate
-
-# Install dependencies
+# Install Backend Deps
 pip install -r backend/requirements.txt
 
-# Copy environment file
+# Configure Environment
 cp .env.example .env
-# Edit .env with your OpenAI API key (optional - mock mode works without it)
+# Edit .env: Add your OPENAI_API_KEY (Groq Key)
 ```
 
-### Run Backend
-
+### 2. Run Locally
+**Backend** (Port 8001)
 ```bash
-cd backend
-uvicorn app.main:app --reload --port 8000
+./backend/run_backend.bat  # Windows
+# or manually: uvicorn app.main:app --port 8001
 ```
 
-### Run Frontend
-
+**Frontend** (Port 3000)
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Verify Installation
+Visit [`http://localhost:3000`](http://localhost:3000) to start chatting with your repos!
 
-```bash
-curl http://localhost:8000/health
-# Expected: {"status":"ok","version":"0.1.0","mock_mode":true}
-```
+## 🌍 Deployment
 
-## API Endpoints
+🚀 **Production Ready for Railway**
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/repo/load` | POST | Load a repository |
-| `/repo/status` | GET | Get repo stats |
-| `/repo/index` | POST | Index a repository |
-| `/chat/ask` | POST | Ask a question |
-| `/chat/generate` | POST | Generate code/tests |
+This project is configured as a **Monorepo**.
+For detailed deployment instructions, please read **[DEPLOYMENT.md](./DEPLOYMENT.md)**.
 
-## Configuration
+**Quick Specs:**
+*   **Service 1 (Backend)**: Python / FastAPI
+*   **Service 2 (Frontend)**: Node.js / Next.js
+*   **Env Vars**: `OPENAI_API_KEY` (Groq), `OPENAI_BASE_URL` (https://api.groq.com/openai/v1)
 
-Environment variables (see `.env.example`):
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key | (mock mode if empty) |
-| `OPENAI_CHAT_MODEL` | Chat model | gpt-4o |
-| `DATA_DIR` | Data directory | data |
-| `DEBUG` | Debug mode | false |
-
-## Mock Mode
-
-If no `OPENAI_API_KEY` is set, the system runs in mock mode:
-- Uses deterministic fake embeddings
-- Useful for testing without API costs
-
-## Project Structure
+## 📂 Project Structure
 
 ```
 repopilot/
-├── backend/           # FastAPI backend
-│   ├── app/
-│   │   ├── main.py    # App entry point
-│   │   ├── config.py  # Settings
-│   │   ├── routes/    # API endpoints
-│   │   ├── services/  # Core logic
-│   │   ├── models/    # Pydantic schemas
-│   │   └── utils/     # Helpers
-│   └── requirements.txt
-├── frontend/          # Next.js frontend
-├── data/              # Cloned repos & indexes
-├── eval/              # Evaluation scripts
-└── README.md
+├── backend/           # 🧠 FastAPI Core
+│   ├── app/           # Logic, Routes, Utils
+│   └── Dockerfile     # Python runtime
+├── frontend/          # 🎨 Next.js UI
+│   ├── src/           # Components & Pages
+│   └── Dockerfile     # Node runtime
+├── data/              # 🗄️ Local Vector Store
+├── scripts/           # 🛠️ Verification Utilities
+└── railway.json       # 🚂 Deployment Config
 ```
 
-## Deployment
+## 📜 License
 
-### Backend (Render / Railway)
-The backend is prepared for deployment on Render or Railway. 
-
-1. Connect your GitHub repository.
-2. Set the root directory to `/backend`.
-3. Use the default start command from `backend/railway.json` (`python run.py`).
-4. Do **not** set `PORT` manually; Railway injects a numeric value at runtime.
-5. Set Environment Variables:
-    - `GEMINI_API_KEY`
-    - `PYTHON_VERSION`: 3.11.0
-
-### Frontend (Vercel)
-The frontend is already configured for Vercel.
-
-1. Connect the `frontend/` directory to a new Vercel project.
-2. Configure **Rewrites**: Ensure `/api/:path*` points to your **production backend URL**.
-3. Redeploy.
-
-## License
-
-MIT
-
+MIT © RepoPilot Team

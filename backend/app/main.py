@@ -50,7 +50,7 @@ app = FastAPI(
 # CORS middleware for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,6 +73,23 @@ async def request_id_middleware(request: Request, call_next):
 app.include_router(health.router)
 app.include_router(repo.router)
 app.include_router(chat.router)
+
+
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler to ensure JSON response."""
+    # Log the full error
+    import traceback
+    error_details = traceback.format_exc()
+    logger = get_logger("main")
+    logger.error("unhandled_exception", error=str(exc), traceback=error_details)
+    
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+    )
 
 
 # Root redirect to docs

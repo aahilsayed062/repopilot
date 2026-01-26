@@ -4,9 +4,7 @@ __pycache__/
 *$py.class
 venv/
 .env
-backend.log
-models_list.txt
-final_verification_8001.txt
+*.log
 
 # Node
 node_modules/
@@ -20,16 +18,12 @@ data/
 index/
 !data/.gitkeep
 
-# Temporary Test Scripts
-verification_results.txt
-restart_backend.py
-verify_suite.py
-verify_env.py
-verify_final_8001.py
-debug_config.py
-debug_routes.py
+# Testing & Verification
+verification_*.txt
+final_verification_*.txt
+test_results/
 
-# Gemini/Antigravity Artifacts (optional to exclude, but usually kept local)
-.gemini/
-.agent/
-brain/
+# Editor/OS
+.vscode/
+.idea/
+Thumbs.db

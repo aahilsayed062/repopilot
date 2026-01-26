@@ -18,15 +18,21 @@ class Answerer:
     Generates answers using LLM and retrieved context.
     """
     
-    SYSTEM_PROMPT = """You are RepoPilot, a grounded engineering assistant.
-    Answer the user's question using ONLY the provided context snippets.
+    SYSTEM_PROMPT = """You are RepoPilot, a helpful engineering assistant.
+    You have access to a codebase, but you can also answer general software engineering questions.
     
     Rules:
-    1. If the answer is not in the context, say "I cannot find evidence for this in the provided context." do not guess.
-    2. Cite your sources. For every statement, provide the file path and line range.
-    3. Do not assume behavior not visible in the code.
+    1. If the user asks about the codebase and you have context:
+       - Answer using ONLY the provided context snippets.
+       - Cite your sources (file path and line range).
+    2. If the user asks about the codebase but you have NO context:
+       - Do NOT guess about the code.
+       - Provide suggestions on what file names or search terms might be relevant.
+       - Offer general knowledge if applicable (e.g. "I couldn't find 'AuthService', but typically authentication handles...").
+       - Explicitly state you are answering from general knowledge.
+    3. If the user asks a general coding question (unrelated to the repo):
+       - Answer helpfuly using your general knowledge.
     4. Provide your response in JSON format matching the schema.
-    5. If asked for general knowledge unconnected to the repo, refuse politely.
     
     Response Schema:
     {
@@ -48,34 +54,22 @@ class Answerer:
         """
         Generate an answer grounded in the provided chunks.
         """
-        # Improvement: Guardrails for out-of-scope queries
-        out_of_scope_keywords = ["joke", "weather", "poem", "story", "personal", "who are you"]
-        if any(kw in query.lower() for kw in out_of_scope_keywords) and not chunks:
-            return ChatResponse(
-                answer="I am RepoPilot, an AI engineering assistant. I can only assist with codebase-related questions based on the provided repositories. I cannot fulfill general knowledge or creative writing requests.",
-                citations=[],
-                confidence="high",
-                assumptions=["Query identified as out-of-scope."]
-            )
-
+        # Improvement: Relaxed guards to allow general assistance
+        
+        context_str = ""
         if not chunks:
-            return ChatResponse(
-                answer="I could not find any relevant code or documentation to answer your question.",
-                citations=[],
-                confidence=AnswerConfidence.LOW,
-            )
-        
-        # Build context string
-        context_parts = []
-        for i, chunk in enumerate(chunks):
-            context_parts.append(
-                f"[Source {i+1}]\n"
-                f"File: {chunk.file_path}\n"
-                f"Lines: {chunk.line_range}\n"
-                f"Content:\n{chunk.content}\n"
-            )
-        
-        context_str = "\n---\n".join(context_parts)
+            context_str = "No relevant code chunks found in the repository. The user might be asking a general question or providing a query that didn't match existing files."
+        else:
+            # Build context string
+            context_parts = []
+            for i, chunk in enumerate(chunks):
+                context_parts.append(
+                    f"[Source {i+1}]\n"
+                    f"File: {chunk.file_path}\n"
+                    f"Lines: {chunk.line_range}\n"
+                    f"Content:\n{chunk.content}\n"
+                )
+            context_str = "\n---\n".join(context_parts)
         
         messages = [
             {"role": "system", "content": self.SYSTEM_PROMPT},
@@ -102,7 +96,7 @@ class Answerer:
         except Exception as e:
             logger.error("answer_generation_failed", error=str(e))
             return ChatResponse(
-                answer="Sorry, I encountered an error while generating the answer.",
+                answer=f"Sorry, I encountered an error while generating the answer. \n\nError details: {str(e)}",
                 citations=[],
                 confidence=AnswerConfidence.LOW,
                 assumptions=[str(e)]

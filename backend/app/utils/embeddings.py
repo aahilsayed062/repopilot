@@ -26,7 +26,10 @@ class EmbeddingService:
             genai.configure(api_key=settings.gemini_api_key)
             self.using_gemini = True
         elif settings.openai_api_key:
-            self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+            self.openai_client = AsyncOpenAI(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url
+            )
             
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for a list of texts."""
@@ -36,6 +39,13 @@ class EmbeddingService:
         if self.using_gemini:
              return await self._get_gemini_embeddings(texts)
         elif self.openai_client:
+            if settings.openai_embedding_model.lower().startswith("mock"):
+                logger.warning("using_mock_embeddings_configured")
+                return self._get_mock_embeddings(texts)
+            # Check if this is Groq (which doesn't support embeddings)
+            if hasattr(self.openai_client, "base_url") and "groq" in str(self.openai_client.base_url):
+                 logger.warning("using_mock_embeddings_for_groq")
+                 return self._get_mock_embeddings(texts)
             return await self._get_openai_embeddings(texts)
         else:
             return self._get_mock_embeddings(texts)
