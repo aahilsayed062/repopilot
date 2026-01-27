@@ -136,7 +136,13 @@ class Indexer:
             
         db_path = self._get_db_path(repo_info)
         client = self._get_client(db_path)
-        return client.get_collection("repo_index")
+        
+        try:
+            return client.get_collection("repo_index")
+        except ValueError:
+            # Collection doesn't exist yet
+            logger.warning("collection_not_found", repo_id=repo_id)
+            return None
 
 
 # Global instance

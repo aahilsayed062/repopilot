@@ -1,109 +1,156 @@
-# 🚀 RepoPilot AI
+# 🚀 RepoPilot AI - VS Code Extension
 
 <div align="center">
 
-![RepoPilot Banner](https://img.shields.io/badge/RepoPilot-Engineering_Tool-6366f1?style=for-the-badge&logo=github)
+![RepoPilot Banner](https://img.shields.io/badge/RepoPilot-VS_Code_Extension-6366f1?style=for-the-badge&logo=visual-studio-code)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
-![Next.js](https://img.shields.io/badge/Next.js-14+-000000?style=flat-square&logo=next.js&logoColor=white)
-![LLM Support](https://img.shields.io/badge/LLM-Groq_%2F_OpenAI-f55036?style=flat-square)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-Groq_%2F_Gemini-f55036?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
-**A retrieval-augmented engineering tool that maps your repository, understands context, and helps you ship faster.**
-
-[Features](#-features) • [Quick Start](#-quick-start) • [Architecture](#-architecture) • [Deployment](#-deployment)
+**A repository-grounded AI coding assistant for VS Code that refuses to hallucinate.**
 
 </div>
 
 ---
 
-## 💡 Core Principle
+## 💡 What is RepoPilot?
 
 > **"Grounded-first, generate-second."**
 
-Unlike generic chat tools, RepoPilot AI**indexes your actual codebase**. All answers are grounded in repository evidence (file citations). If evidence is missing, it refuses to hallucinate.
+RepoPilot is a VS Code extension that indexes your codebase and provides AI-powered answers grounded in YOUR actual code. Unlike generic AI assistants, every answer cites specific files and line numbers.
 
 ## ✨ Features
 
-- 🔍 **Smart Ingestion**: Clone & analyze any GitHub repo or local path.
-- ⚡ **Groq-Powered Speed**: Uses **Llama 3 70B** on Groq for sub-second reasoning.
-- 🧩 **Evidence-Based Q&A**: Every answer cites specific files and line numbers.
-- 🛠️ **Code Generation**: Generates context-aware diffs and unit tests.
-- 🛡️ **Safe Fallback**: Validates inputs and refuses vague/unsafe requests.
+- 🔍 **Smart Indexing** - Automatically indexes your workspace
+- ⚡ **Grounded Answers** - Every response cites real files
+- 🛠️ **Code Generation** - Generate code matching your patterns
+- 🧪 **Test Generation** - Auto-generate PyTest tests
+- 🛡️ **Safe Refusals** - Refuses risky operations with explanations
+- 📊 **Confidence Scores** - See how certain the AI is
 
 ## 🏗️ Architecture
 
-- **Backend**: FastAPI (Python) with `chromadb` (Vector Store) and `langchain`.
-- **Frontend**: Next.js 14 (TypeScript) with Tailwind CSS.
-- **AI Engine**: Groq API (Llama 3) + Mock Embeddings (Hybrid retrieval).
-- **Deployment**: Optimized for Railway (Monorepo support).
+```
+┌─────────────────────────────────────────────────────────┐
+│  VS Code Extension (TypeScript)                         │
+│  ├─ Chat Panel (Sidebar)                                │
+│  ├─ Commands & Code Actions                             │
+│  └─ Auto-indexing                                       │
+└────────────────────┬────────────────────────────────────┘
+                     │ HTTP (localhost:8001)
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  Backend Server (FastAPI + Python)                      │
+│  ├─ Embeddings: Gemini (FREE)                          │
+│  ├─ Chat LLM: Groq (FREE, fast)                        │
+│  └─ Vector Store: ChromaDB                             │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- [Groq API Key](https://console.groq.com) (Free)
+- VS Code
 
-### 1. Setup
-```bash
-# Clone
-git clone <repo-url>
-cd repopilot
+### 1. Start Backend
 
-# Setup Virtual Environment
+```powershell
+cd backend
 python -m venv venv
-.\venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Mac/Linux
-
-# Install Backend Deps
-pip install -r backend/requirements.txt
-
-# Configure Environment
-cp .env.example .env
-# Edit .env: Add your OPENAI_API_KEY (Groq Key)
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+.\venv\Scripts\python.exe -m uvicorn app.main:app --port 8001 --reload
 ```
 
-### 2. Run Locally
-**Backend** (Port 8001)
-```bash
-./backend/run_backend.bat  # Windows
-# or manually: uvicorn app.main:app --port 8001
-```
+### 2. Run Extension
 
-**Frontend** (Port 3000)
-```bash
-cd frontend
+```powershell
+cd vscode-extension
 npm install
-npm run dev
+npm run compile
+code .
+# Press F5 in VS Code
 ```
 
-Visit [`http://localhost:3000`](http://localhost:3000) to start chatting with your repos!
+### 3. Configure API Keys
 
-## 🌍 Deployment
+Create `.env` in project root:
+```env
+GEMINI_API_KEY=your_gemini_key
+OPENAI_API_KEY=your_groq_key
+OPENAI_BASE_URL=https://api.groq.com/openai/v1
+```
 
-🚀 **Production Ready for Railway**
-
-This project is configured as a **Monorepo**.
-For detailed deployment instructions, please read **[DEPLOYMENT.md](./DEPLOYMENT.md)**.
-
-**Quick Specs:**
-*   **Service 1 (Backend)**: Python / FastAPI
-*   **Service 2 (Frontend)**: Node.js / Next.js
-*   **Env Vars**: `OPENAI_API_KEY` (Groq), `OPENAI_BASE_URL` (https://api.groq.com/openai/v1)
-
-## 📂 Project Structure
+## 📦 Project Structure
 
 ```
 repopilot/
-├── backend/           # 🧠 FastAPI Core
-│   ├── app/           # Logic, Routes, Utils
-│   └── Dockerfile     # Python runtime
-├── frontend/          # 🎨 Next.js UI
-│   ├── src/           # Components & Pages
-│   └── Dockerfile     # Node runtime
-├── data/              # 🗄️ Local Vector Store
-├── scripts/           # 🛠️ Verification Utilities
-└── railway.json       # 🚂 Deployment Config
+├── backend/              # FastAPI Backend
+│   ├── app/
+│   │   ├── routes/       # API endpoints
+│   │   ├── services/     # Business logic
+│   │   └── utils/        # LLM, embeddings
+│   └── requirements.txt
+├── vscode-extension/     # VS Code Extension
+│   ├── src/              # TypeScript source
+│   ├── media/            # Chat UI assets
+│   └── package.json
+├── .env                  # API keys (create this)
+├── README.md
+└── SETUP_GUIDE.md        # Detailed setup instructions
+```
+
+## 🎯 Usage
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `RepoPilot: Open Chat` | Open the chat panel |
+| `RepoPilot: Index Workspace` | Re-index the current workspace |
+| `RepoPilot: Ask About Selection` | Ask about selected code |
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Shift+R` | Open Chat |
+| `Ctrl+Shift+A` | Ask about selection |
+
+### Chat Commands
+
+- **Ask questions**: Just type naturally
+- **Generate code**: Prefix with `/generate`
+
+## 🔑 API Keys
+
+| Provider | Purpose | Get Key |
+|----------|---------|---------|
+| **Gemini** | Embeddings (FREE) | [aistudio.google.com](https://aistudio.google.com/apikey) |
+| **Groq** | Chat LLM (FREE) | [console.groq.com](https://console.groq.com) |
+
+## 📚 Documentation
+
+- **[SETUP_GUIDE.md](./SETUP_GUIDE.md)** - Detailed setup instructions
+- **[roadmap.md](./roadmap.md)** - Complete feature roadmap
+
+## 🔧 Development
+
+### Build Extension
+```powershell
+cd vscode-extension
+npm run compile    # Dev build
+npm run package    # Production build
+```
+
+### Package for Distribution
+```powershell
+npm install -g @vscode/vsce
+vsce package
+# Creates: repopilot-1.0.0.vsix
 ```
 
 ## 📜 License

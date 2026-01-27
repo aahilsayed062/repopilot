@@ -23,10 +23,16 @@ async def lifespan(app: FastAPI):
     # Startup
     setup_logging(debug=settings.debug)
     logger = get_logger("main")
+    
+    # Determine providers for logging
+    embedding_provider = "Gemini" if settings.gemini_api_key else ("OpenAI" if settings.openai_api_key else "Mock")
+    chat_provider = "Groq" if (settings.openai_api_key and settings.openai_base_url and "groq" in settings.openai_base_url) else ("Gemini" if settings.gemini_api_key else "Mock")
+    
     logger.info(
         "starting_repopilot",
         version=settings.app_version,
-        mock_mode=settings.use_mock_embeddings,
+        embedding_provider=embedding_provider,
+        chat_provider=chat_provider,
         data_dir=str(settings.data_dir)
     )
     

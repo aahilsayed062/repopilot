@@ -1,5 +1,12 @@
 """
-LLM Service - Handles interactions with OpenAI and Gemini Chat APIs.
+LLM Service - Handles interactions with OpenAI/Groq and Gemini Chat APIs.
+
+Priority Logic:
+1. OpenAI/Groq (if OPENAI_API_KEY is set) - Using for chat (fast!)
+2. Gemini (if GEMINI_API_KEY is set) - Fallback for chat
+3. Mock (if no keys) - Development only
+
+Note: Embeddings are handled separately in embeddings.py (uses Gemini)
 """
 
 import os
@@ -16,26 +23,38 @@ logger = get_logger(__name__)
 
 
 class LLMService:
-    """Interface for Chat LLM (OpenAI or Gemini)."""
+    """Interface for Chat LLM (OpenAI/Groq or Gemini).
+    
+    Priority: OpenAI/Groq > Gemini > Mock
+    
+    This allows using Groq for fast chat while Gemini handles embeddings.
+    """
     
     def __init__(self):
         self.openai_client = None
         self.gemini_model = None
-        self.using_gemini = False
+        self.provider = "mock"  # 'openai', 'gemini', or 'mock'
         
-        if settings.gemini_api_key:
-            genai.configure(api_key=settings.gemini_api_key)
-            self.using_gemini = True
-            # Ensure gemini_chat_model has a default if not set, and add 'models/' prefix if missing
-            model_name = settings.gemini_chat_model or "gemini-1.5-flash" # Default to gemini-1.5-flash if not specified
-            if not model_name.startswith("models/"):
-                model_name = f"models/{model_name}"
-            self.gemini_model_name = model_name
-        elif settings.openai_api_key:
+        # Priority: OpenAI/Groq first (for chat), then Gemini, then mock
+        if settings.openai_api_key:
             self.openai_client = AsyncOpenAI(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url
             )
+            self.provider = "openai"
+            provider_name = "Groq" if settings.openai_base_url and "groq" in settings.openai_base_url else "OpenAI"
+            logger.info("llm_initialized", provider=provider_name, model=settings.openai_chat_model)
+        elif settings.gemini_api_key:
+            genai.configure(api_key=settings.gemini_api_key)
+            # Ensure gemini_chat_model has proper format
+            model_name = settings.gemini_chat_model or "gemini-2.0-flash"
+            if not model_name.startswith("models/"):
+                model_name = f"models/{model_name}"
+            self.gemini_model_name = model_name
+            self.provider = "gemini"
+            logger.info("llm_initialized", provider="Gemini", model=model_name)
+        else:
+            logger.warning("llm_initialized", provider="mock", message="No API key configured")
 
     def _supports_openai_json_mode(self) -> bool:
         """Return True if the configured OpenAI endpoint supports response_format JSON."""
@@ -53,21 +72,30 @@ class LLMService:
     ) -> str:
         """
         Get completion from LLM.
+        
+        Uses priority: OpenAI/Groq > Gemini > Mock
         """
-        if not (self.openai_client or self.using_gemini):
+        if self.provider == "mock":
             return self._mock_chat(messages)
             
         try:
-            if self.using_gemini:
+            if self.provider == "openai":
+                return await self._call_openai(messages, temperature, model, json_mode)
+            elif self.provider == "gemini":
                 return await self._call_gemini(messages, temperature, json_mode)
             else:
-                return await self._call_openai(messages, temperature, model, json_mode)
+                return self._mock_chat(messages)
             
         except Exception as e:
-            logger.error("llm_call_failed", error=str(e))
-            # Fallback to mock if API matches "mock" logic or just error
-            if "mock" in str(e).lower():
-                 return self._mock_chat(messages)
+            logger.error("llm_call_failed", error=str(e), provider=self.provider)
+            # Try fallback to Gemini if OpenAI/Groq fails
+            if self.provider == "openai" and settings.gemini_api_key:
+                logger.warning("llm_fallback_to_gemini", reason=str(e))
+                try:
+                    genai.configure(api_key=settings.gemini_api_key)
+                    return await self._call_gemini(messages, temperature, json_mode)
+                except Exception as e2:
+                    logger.error("gemini_fallback_failed", error=str(e2))
             raise
             
     @backoff.on_exception(backoff.expo, OpenAIError, max_tries=3)
@@ -90,9 +118,6 @@ class LLMService:
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     async def _call_gemini(self, messages, temperature, json_mode):
         # Translate OpenAI messages to Gemini history
-        # OpenAI: role=system|user|assistant
-        # Gemini: role=user|model, system instructions configured on model init or part of prompt
-        
         system_instruction = None
         history = []
         last_user_message = ""
@@ -109,13 +134,9 @@ class LLMService:
             elif role == "assistant":
                 history.append({"role": "model", "parts": [content]})
         
-        # Gemini Python SDK uses ChatSession
-        # But we want a stateless-ish call usually, or we can use GenerativeModel.generate_content
-        # For chat, best to use start_chat with history, but history excludes the *new* message
-        
         # Pop the last user message to send it for generation
         if history and history[-1]["role"] == "user":
-            history.pop() # Remove last message to send it as 'message'
+            history.pop()
         
         gen_config = genai.GenerationConfig(
             temperature=temperature,
@@ -124,7 +145,7 @@ class LLMService:
         if json_mode:
             gen_config.response_mime_type = "application/json"
         
-        model_name = self.gemini_model_name
+        model_name = getattr(self, 'gemini_model_name', "models/gemini-2.0-flash")
         if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
             
@@ -156,7 +177,7 @@ class LLMService:
             "**[MOCK LLM RESPONSE]**\n\n"
             "I am running in mock mode. Here is a simulated answer.\n\n"
             "Based on the context provided, the answer is found in the retrieved chunks.\n"
-            "Please configure GEMINI_API_KEY (or OPENAI_API_KEY) to get real grounded answers."
+            "Please configure OPENAI_API_KEY (Groq) or GEMINI_API_KEY to get real grounded answers."
         )
 
 

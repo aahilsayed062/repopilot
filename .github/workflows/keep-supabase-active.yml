@@ -1,0 +1,52 @@
+name: Keep Supabase Active
+
+on:
+  schedule:
+    # Runs every 6 hours to prevent free tier pausing (pauses after 7 days of inactivity)
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  ping-supabase:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Ping Supabase Database
+        env:
+          SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          echo "Pinging Supabase to keep project active..."
+          
+          # Make a simple query to users table (just count, no data retrieval)
+          response=$(curl -s -w "\n%{http_code}" -X GET \
+            "${SUPABASE_URL}/rest/v1/users?select=count" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json")
+          
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+          
+          echo "HTTP Status: $http_code"
+          echo "Response: $body"
+          
+          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 206 ]; then
+            echo "✅ Successfully pinged Supabase!"
+            echo "Project will remain active for another 7 days."
+          else
+            echo "⚠️ Ping failed with status $http_code"
+            echo "Response: $body"
+            exit 1
+          fi
+      
+      - name: Log Success
+        if: success()
+        run: |
+          echo "🎉 Supabase keep-alive successful at $(date -u)"
+          echo "Next scheduled run in 6 hours"
+      
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "❌ Supabase ping failed at $(date -u)"
+          echo "Please check your Supabase credentials in repository secrets"
