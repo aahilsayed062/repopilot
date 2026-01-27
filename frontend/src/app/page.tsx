@@ -21,7 +21,10 @@ import {
   ChevronRight,
   Github,
   Menu,
-  X
+  X,
+  RefreshCw,
+  RotateCcw,
+  Download
 } from "lucide-react";
 
 // ============================================
@@ -225,17 +228,22 @@ export default function Home() {
   // Repo State
   const [repoUrl, setRepoUrl] = useState("https://github.com/keleshev/schema");
   const [repoId, setRepoId] = useState<string | null>(null);
+  const [repoName, setRepoName] = useState<string | null>(null);
+  const [commitHash, setCommitHash] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isIndexing, setIsIndexing] = useState(false);
   const [status, setStatus] = useState<string>("Initializing...");
   const [statusType, setStatusType] = useState<'default' | 'success' | 'error' | 'warning'>('default');
   const [isIndexed, setIsIndexed] = useState(false);
   const [stats, setStats] = useState<RepoStats | null>(null);
   const [files, setFiles] = useState<RepoFile[]>([]);
+  const [chunkCount, setChunkCount] = useState<number>(0);
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [lastError, setLastError] = useState<{ type: 'chat' | 'index', message: string, retry: () => void } | null>(null);
 
   // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -272,10 +280,12 @@ export default function Home() {
   // Load Repo
   const loadRepo = async () => {
     if (!repoUrl.trim()) return;
+    if (isLoading || isIndexing) return; // Prevent concurrent operations
 
     setIsLoading(true);
     setStatus("Loading repository...");
     setStatusType('default');
+    setLastError(null);
 
     try {
       const res = await fetch("/api/repo/load", {
@@ -288,39 +298,50 @@ export default function Home() {
       if (!res.ok) throw new Error(data.detail || "Failed to load repo");
 
       setRepoId(data.repo_id);
+      setRepoName(data.repo_name);
+      setCommitHash(data.commit_hash || null);
       setStats(data.stats);
-      setStatus(`Success: ${data.repo_name} loaded`);
+      setStatus(`Loaded: ${data.repo_name}`);
       setStatusType('success');
 
       // Auto-index
-      await indexRepo(data.repo_id);
+      await indexRepo(data.repo_id, false);
 
     } catch (e: unknown) {
       const error = e as Error;
       setStatus(`Error: ${error.message}`);
       setStatusType('error');
+      setLastError({ type: 'index', message: error.message, retry: loadRepo });
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Index Repo
-  const indexRepo = async (id: string) => {
+  // Index Repo (with lock and force option)
+  const indexRepo = async (id: string, force: boolean = false) => {
+    if (isIndexing) {
+      console.warn('Indexing already in progress');
+      return;
+    }
+
+    setIsIndexing(true);
     setStatus("Indexing code chunks...");
     setStatusType('default');
+    setLastError(null);
 
     try {
       const res = await fetch("/api/repo/index", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_id: id }),
+        body: JSON.stringify({ repo_id: id, force }),
       });
       const data = await res.json();
 
-      if (!res.ok) throw new Error(data.detail || "Failed index");
+      if (!res.ok) throw new Error(data.detail || "Failed to index");
 
       setIsIndexed(true);
-      setStatus(`Search Ready • ${data.chunk_count} code chunks`);
+      setChunkCount(data.chunk_count || 0);
+      setStatus(`Ready • ${data.chunk_count} chunks indexed`);
       setStatusType('success');
 
       // Get files
@@ -334,7 +355,67 @@ export default function Home() {
       const error = e as Error;
       setStatus(`Error: ${error.message}`);
       setStatusType('error');
+      setLastError({ type: 'index', message: error.message, retry: () => indexRepo(id, force) });
+    } finally {
+      setIsIndexing(false);
     }
+  };
+
+  // Reindex (force)
+  const handleReindex = () => {
+    if (repoId && !isIndexing) {
+      indexRepo(repoId, true);
+    }
+  };
+
+  // Export conversation to markdown
+  const exportToMarkdown = () => {
+    if (messages.length === 0) return;
+
+    let md = `# RepoPilot Conversation\n\n`;
+    md += `**Repository:** ${repoName || 'Unknown'}\n`;
+    md += `**Exported:** ${new Date().toLocaleString()}\n\n---\n\n`;
+
+    messages.forEach((msg, i) => {
+      if (msg.role === 'user') {
+        md += `## 💬 User\n\n${msg.content}\n\n`;
+      } else {
+        md += `## 🤖 Assistant\n\n${msg.content}\n\n`;
+
+        if (msg.citations && msg.citations.length > 0) {
+          md += `### 📚 Citations\n\n`;
+          msg.citations.forEach(c => {
+            md += `- \`${c.file_path}${c.line_range ? ':' + c.line_range : ''}\`\n`;
+          });
+          md += '\n';
+        }
+
+        if (msg.diffs && msg.diffs.length > 0) {
+          md += `### 📝 Code Changes\n\n`;
+          msg.diffs.forEach(d => {
+            md += `**${d.file_path}**\n\`\`\`diff\n${d.diff}\n\`\`\`\n\n`;
+          });
+        }
+
+        if (msg.tests) {
+          md += `### 🧪 Tests\n\n\`\`\`python\n${msg.tests}\n\`\`\`\n\n`;
+        }
+
+        if (msg.confidence) {
+          md += `*Confidence: ${msg.confidence}*\n\n`;
+        }
+      }
+      md += '---\n\n';
+    });
+
+    // Trigger download
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `repopilot-${repoName || 'chat'}-${Date.now()}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // Send Message
@@ -491,7 +572,7 @@ export default function Home() {
               />
               <button
                 onClick={loadRepo}
-                disabled={isLoading}
+                disabled={isLoading || isIndexing}
                 className="btn btn-primary btn-full shadow-glow-coral"
               >
                 {isLoading ? (
@@ -499,10 +580,36 @@ export default function Home() {
                     <Loader2 size={16} className="animate-spin" />
                     Connecting...
                   </>
+                ) : isIndexing ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Indexing...
+                  </>
                 ) : (
                   'Connect Repository'
                 )}
               </button>
+
+              {/* Reindex Button */}
+              {isIndexed && repoId && (
+                <button
+                  onClick={handleReindex}
+                  disabled={isIndexing}
+                  className="btn btn-secondary btn-full mt-2"
+                >
+                  {isIndexing ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      Reindexing...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={14} />
+                      Reindex ({chunkCount} chunks)
+                    </>
+                  )}
+                </button>
+              )}
             </div>
 
             {/* Stats */}
@@ -587,12 +694,56 @@ export default function Home() {
               <MessageSquare size={18} />
               AI Assistant
             </h2>
-            {isIndexed && (
-              <div className="badge badge-success text-[10px] py-1">
-                KNOWLEDGE BASE ACTIVE
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {messages.length > 0 && (
+                <button
+                  onClick={exportToMarkdown}
+                  className="btn-ghost p-2"
+                  title="Export to Markdown"
+                >
+                  <Download size={16} />
+                </button>
+              )}
+              {isIndexed && (
+                <div className="badge badge-success text-[10px] py-1">
+                  KNOWLEDGE BASE ACTIVE
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* Error Banner */}
+          <AnimatePresence>
+            {lastError && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mx-4 mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-2 text-red-400 text-sm flex-1 min-w-0">
+                  <AlertCircle size={16} className="flex-shrink-0" />
+                  <span className="truncate">{lastError.message}</span>
+                </div>
+                <div className="flex gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => navigator.clipboard.writeText(lastError.message)}
+                    className="btn-ghost text-xs px-2 py-1"
+                    title="Copy error"
+                  >
+                    <Copy size={12} />
+                  </button>
+                  <button
+                    onClick={() => { setLastError(null); lastError.retry(); }}
+                    className="btn btn-primary text-xs px-3 py-1"
+                  >
+                    <RotateCcw size={12} />
+                    Retry
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Messages */}
           <div className="messages-container">
