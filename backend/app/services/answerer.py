@@ -18,6 +18,9 @@ class Answerer:
     Generates answers using LLM and retrieved context.
     """
     
+    # Limit per-chunk content to avoid token overflow with Groq's 12k TPM
+    MAX_CONTENT_LENGTH = 600
+    
     SYSTEM_PROMPT = """You are RepoPilot, a helpful engineering assistant.
     You have access to a codebase, but you can also answer general software engineering questions.
     
@@ -60,14 +63,19 @@ class Answerer:
         if not chunks:
             context_str = "No relevant code chunks found in the repository. The user might be asking a general question or providing a query that didn't match existing files."
         else:
-            # Build context string
+            # Build context string with truncation
             context_parts = []
             for i, chunk in enumerate(chunks):
+                # Truncate content to avoid token overflow
+                content = chunk.content
+                if len(content) > self.MAX_CONTENT_LENGTH:
+                    content = content[:self.MAX_CONTENT_LENGTH] + "... [truncated]"
+                
                 context_parts.append(
                     f"[Source {i+1}]\n"
                     f"File: {chunk.file_path}\n"
                     f"Lines: {chunk.line_range}\n"
-                    f"Content:\n{chunk.content}\n"
+                    f"Content:\n{content}\n"
                 )
             context_str = "\n---\n".join(context_parts)
         
