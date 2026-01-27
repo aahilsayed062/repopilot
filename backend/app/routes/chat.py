@@ -43,9 +43,10 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
                 seen_ids.add(c.metadata.chunk_id)
 
         # 3. Answer
+        # Limit total chunks to 5 to prevent token overflow
         response = await answerer.answer(
             query=request.question,
-            chunks=unique_chunks
+            chunks=unique_chunks[:5]
         )
         
         return response

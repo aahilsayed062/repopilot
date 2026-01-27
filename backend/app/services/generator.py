@@ -68,7 +68,8 @@ class Generator:
         logger.info("generating_code_start", repo_id=repo_id, request=request)
         
         # 1. Retrieve Context
-        chunks = await retriever.retrieve(repo_id, request, k=10)
+        # Reduced k from 10 to 4 to avoid rate limits
+        chunks = await retriever.retrieve(repo_id, request, k=4)
         
         if not chunks:
             return GenerationResponse(
@@ -88,7 +89,24 @@ class Generator:
         
         try:
             response_text = await llm.chat_completion(messages, json_mode=True)
-            data = json.loads(response_text)
+            # Clean up markdown code blocks if present
+            clean_text = response_text.strip()
+            if clean_text.startswith("```"):
+                import re
+                clean_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean_text, flags=re.MULTILINE)
+            clean_text = clean_text.strip()
+
+            if not clean_text.startswith("{"):
+                clean_text = f"{{{clean_text}}}"
+
+            try:
+                data = json.loads(clean_text)
+            except json.JSONDecodeError:
+                # Try simple regex fallback for plan/changes matching if strict parsing fails
+                import re
+                plan_match = re.search(r'"plan":\s*"(.*?)(?<!\\)"', clean_text, re.DOTALL)
+                plan = plan_match.group(1) if plan_match else "Error parsing plan"
+                data = {"plan": plan, "changes": [], "test_file_content": ""}
             
             # 3. Parse and Return
             diffs = []
@@ -119,10 +137,15 @@ class Generator:
     def _format_context(self, chunks: List[Chunk]) -> str:
         parts = []
         for c in chunks:
+            # Truncate content to avoid token overflow (keep larger than answerer for code gen)
+            content = c.content
+            if len(content) > 1000:
+                content = content[:1000] + "... [truncated]"
+            
             parts.append(
                 f"File: {c.metadata.file_path}\n"
                 f"Lines: {c.metadata.start_line}-{c.metadata.end_line}\n"
-                f"```\n{c.content}\n```"
+                f"```\n{content}\n```"
             )
         return "\n---\n".join(parts)
 

@@ -88,18 +88,52 @@ class Answerer:
             response_text = await llm.chat_completion(messages, json_mode=True)
             
             # Parse JSON
-            # Note: Mock LLM returns markdown, not JSON, so handle that
-            try:
-                data = json.loads(response_text)
+            # Clean up markdown code blocks if present (Groq/Llama-3 sometimes includes them even in JSON mode)
+            # Clean up markdown code blocks if present
+            clean_text = response_text.strip()
+            if clean_text.startswith("```"):
+                import re
+                clean_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean_text, flags=re.MULTILINE)
+            
+            clean_text = clean_text.strip()
+            
+            # Helper to attempt parsing
+            def parse_json(text):
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return None
+
+            # Strategy 1: Direct Parse
+            data = parse_json(clean_text)
+            
+            # Strategy 2: Fix missing braces (Llama-3 sometimes returns just "key": "value")
+            if not data and not clean_text.startswith("{"):
+                data = parse_json(f"{{{clean_text}}}")
+                
+            # Strategy 3: Regex extraction of the 'answer' field
+            if not data:
+                import re
+                # Match "answer": "..." (handling simple escaped quotes)
+                match = re.search(r'"answer"\s*:\s*"(.*?)(?<!\\)"', clean_text, re.DOTALL)
+                if match:
+                    data = {
+                        "answer": match.group(1).encode('utf-8').decode('unicode_escape'),
+                        "citations": [],
+                        "confidence": "low",
+                        "assumptions": ["Extracted answer via regex"]
+                    }
+            
+            if data:
                 return ChatResponse(**data)
-            except json.JSONDecodeError:
-                # Fallback for mock or malformed response
-                return ChatResponse(
-                    answer=response_text,
-                    citations=[],
-                    confidence=AnswerConfidence.LOW,
-                    assumptions=["Response format was not valid JSON"]
-                )
+            
+            # Fallback: Treat whole text as answer if it doesn't look like JSON
+            return ChatResponse(
+                answer=response_text,
+                citations=[],
+                confidence=AnswerConfidence.LOW,
+                assumptions=["Response format was not valid JSON"]
+            )
                 
         except Exception as e:
             logger.error("answer_generation_failed", error=str(e))
