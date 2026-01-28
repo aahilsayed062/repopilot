@@ -16,6 +16,8 @@ import {
     ChatResponse,
     GenerationRequest,
     GenerationResponse,
+    PyTestRequest,
+    PyTestResponse,
 } from './types';
 
 /**
@@ -189,6 +191,31 @@ export async function generateCode(
         body: JSON.stringify(body),
     });
 }
+
+/**
+ * Generate PyTest test cases
+ */
+export async function generatePyTest(
+    repoId: string,
+    options: {
+        targetFile?: string;
+        targetFunction?: string;
+        customRequest?: string;
+    } = {}
+): Promise<PyTestResponse> {
+    const body: PyTestRequest = {
+        repo_id: repoId,
+        target_file: options.targetFile,
+        target_function: options.targetFunction,
+        custom_request: options.customRequest,
+    };
+
+    return fetchJson<PyTestResponse>('/chat/pytest', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    });
+}
+
 
 /**
  * Full workflow: Load repo, index if needed, return repo_id

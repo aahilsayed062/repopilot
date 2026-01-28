@@ -111,6 +111,28 @@ export interface GenerationResponse {
 }
 
 // ============================================================================
+// PyTest Generation Models
+// ============================================================================
+
+export interface PyTestRequest {
+    repo_id: string;
+    target_file?: string;
+    target_function?: string;
+    custom_request?: string;
+}
+
+export interface PyTestResponse {
+    success: boolean;
+    tests: string;
+    test_file_name: string;
+    explanation: string;
+    coverage_notes: string[];
+    source_files: string[];
+    error?: string;
+}
+
+
+// ============================================================================
 // Webview Message Protocol
 // ============================================================================
 
