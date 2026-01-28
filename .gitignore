@@ -11,6 +11,7 @@ node_modules/
 .next/
 out/
 build/
+dist/
 .DS_Store
 
 # RepoPilot Data
@@ -27,3 +28,7 @@ test_results/
 .vscode/
 .idea/
 Thumbs.db
+*.vsix
+
+# Gemini Artifacts
+.gemini/

@@ -12,9 +12,24 @@ import { ChatResponse, GenerationResponse, Citation } from './types';
 export function formatChatResponse(response: ChatResponse): string {
     const sections: string[] = [];
 
+    // Clean the answer - sometimes LLM returns JSON in the answer field
+    let answer = response.answer || '';
+
+    // If answer looks like JSON, try to extract just the answer text
+    if (answer.trim().startsWith('{')) {
+        try {
+            const parsed = JSON.parse(answer);
+            if (parsed.answer) {
+                answer = parsed.answer;
+            }
+        } catch {
+            // Not valid JSON, use as-is
+        }
+    }
+
     // Answer first - what the user actually wants
     sections.push('### ✅ Answer');
-    sections.push(response.answer);
+    sections.push(answer);
     sections.push('');
 
     // Citations - if any

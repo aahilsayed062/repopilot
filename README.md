@@ -1,158 +1,207 @@
-# 🚀 RepoPilot AI - VS Code Extension
+# 🤖 RepoPilot AI - Repository-Grounded Assistant
 
-<div align="center">
+> **Problem Statement 2 (PS2)** - AlphaByte 3.0 | GDGC PCCE | Develop Design Innovate
 
-![RepoPilot Banner](https://img.shields.io/badge/RepoPilot-VS_Code_Extension-6366f1?style=for-the-badge&logo=visual-studio-code)
-![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-3178C6?style=flat-square&logo=typescript&logoColor=white)
-![LLM](https://img.shields.io/badge/LLM-Groq_%2F_Gemini-f55036?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-
-**A repository-grounded AI coding assistant for VS Code that refuses to hallucinate.**
-
-</div>
+A VS Code extension that uses **RAG (Retrieval-Augmented Generation)** to answer questions about any GitHub repository with grounded, citation-backed responses.
 
 ---
 
-## 💡 What is RepoPilot?
-
-> **"Grounded-first, generate-second."**
-
-RepoPilot is a VS Code extension that indexes your codebase and provides AI-powered answers grounded in YOUR actual code. Unlike generic AI assistants, every answer cites specific files and line numbers.
-
 ## ✨ Features
 
-- 🔍 **Smart Indexing** - Automatically indexes your workspace
-- ⚡ **Grounded Answers** - Every response cites real files
-- 🛠️ **Code Generation** - Generate code matching your patterns
-- 🧪 **Test Generation** - Auto-generate PyTest tests
-- 🛡️ **Safe Refusals** - Refuses risky operations with explanations
-- 📊 **Confidence Scores** - See how certain the AI is
+| Feature | Status | Description |
+|---------|--------|-------------|
+| **Repository-aware Q&A** | ✅ | Ask questions about code, get answers with file citations |
+| **Query Decomposition** | ✅ | Complex questions are split into sub-queries |
+| **Code Generation** | ✅ | Generate code that follows repo patterns |
+| **Safe Refusal** | ✅ | Won't hallucinate - shows confidence levels |
+| **Grounded Answers** | ✅ | All answers cite real files from the repo |
 
-## 🏗️ Architecture
+---
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  VS Code Extension (TypeScript)                         │
-│  ├─ Chat Panel (Sidebar)                                │
-│  ├─ Commands & Code Actions                             │
-│  └─ Auto-indexing                                       │
-└────────────────────┬────────────────────────────────────┘
-                     │ HTTP (localhost:8001)
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│  Backend Server (FastAPI + Python)                      │
-│  ├─ Embeddings: Gemini (FREE)                          │
-│  ├─ Chat LLM: Groq (FREE, fast)                        │
-│  └─ Vector Store: ChromaDB                             │
-└─────────────────────────────────────────────────────────┘
-```
-
-## 🚀 Quick Start
+## 🚀 Quick Start (5 Minutes)
 
 ### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- VS Code
 
-### 1. Start Backend
+- **Python 3.11+** ([Download](https://www.python.org/downloads/))
+- **Node.js 18+** ([Download](https://nodejs.org/))
+- **Git** ([Download](https://git-scm.com/downloads))
+- **VS Code** ([Download](https://code.visualstudio.com/))
 
-```powershell
+### Step 1: Clone & Setup Environment
+
+```bash
+git clone https://github.com/YOUR_USERNAME/repopilot.git
+cd repopilot
+```
+
+### Step 2: Get Free API Keys
+
+| Service | Get Key | Purpose |
+|---------|---------|---------|
+| **Gemini** | [ai.google.dev](https://ai.google.dev/) | Embeddings (FREE) |
+| **Groq** | [console.groq.com](https://console.groq.com/) | Chat LLM (FREE) |
+
+### Step 3: Configure Environment
+
+Copy `.env.example` to `.env` and add your keys:
+
+```bash
+# Copy the example
+copy .env.example .env
+
+# Edit .env with your keys:
+GEMINI_API_KEY=your_gemini_key_here
+GROQ_API_KEY=your_groq_key_here
+```
+
+### Step 4: Start the Backend
+
+**Windows:**
+```bash
+start_backend.bat
+```
+
+**Mac/Linux:**
+```bash
 cd backend
 python -m venv venv
-.\venv\Scripts\Activate.ps1
+source venv/bin/activate
 pip install -r requirements.txt
-.\venv\Scripts\python.exe -m uvicorn app.main:app --port 8001 --reload
+uvicorn app.main:app --port 8001 --reload
 ```
 
-### 2. Run Extension
-
-```powershell
-cd vscode-extension
-npm install
-npm run compile
-code .
-# Press F5 in VS Code
+You should see:
+```
+INFO: Uvicorn running on http://127.0.0.1:8001
+embedding_provider=Gemini chat_provider=Groq
 ```
 
-### 3. Configure API Keys
+### Step 5: Run the Extension
 
-Create `.env` in project root:
-```env
-GEMINI_API_KEY=your_gemini_key
-OPENAI_API_KEY=your_groq_key
-OPENAI_BASE_URL=https://api.groq.com/openai/v1
-```
+1. Open `vscode-extension` folder in VS Code
+2. Press **F5** to launch Extension Development Host
+3. In the new VS Code window, click **RepoPilot** icon in sidebar
+4. Click **📁 Index** and enter a GitHub URL
+5. Start asking questions!
 
-## 📦 Project Structure
+---
+
+## 📁 Project Structure
 
 ```
 repopilot/
-├── backend/              # FastAPI Backend
+├── backend/                    # Python FastAPI server
 │   ├── app/
-│   │   ├── routes/       # API endpoints
-│   │   ├── services/     # Business logic
-│   │   └── utils/        # LLM, embeddings
+│   │   ├── main.py            # Entry point
+│   │   ├── routes/            # API endpoints
+│   │   │   ├── repo.py        # /repo/load, /repo/index
+│   │   │   ├── chat.py        # /chat/ask, /chat/generate
+│   │   │   └── health.py      # /health
+│   │   ├── services/          # Business logic
+│   │   │   ├── repo_manager.py  # Git operations
+│   │   │   ├── chunker.py       # Code splitting
+│   │   │   ├── indexer.py       # Vector storage
+│   │   │   ├── retriever.py     # Semantic search
+│   │   │   ├── answerer.py      # RAG answers
+│   │   │   └── planner.py       # Query decomposition
+│   │   └── utils/             # Embeddings, LLM, logging
 │   └── requirements.txt
-├── vscode-extension/     # VS Code Extension
-│   ├── src/              # TypeScript source
-│   ├── media/            # Chat UI assets
+│
+├── vscode-extension/          # TypeScript VS Code extension
+│   ├── src/                   # Extension source
+│   ├── media/                 # Webview UI
 │   └── package.json
-├── .env                  # API keys (create this)
-├── README.md
-└── SETUP_GUIDE.md        # Detailed setup instructions
+│
+├── .env.example               # Environment template
+├── start_backend.bat          # Windows launcher
+├── README.md                  # This file
+└── REPOPILOT_ASSESSMENT.md    # Full technical assessment
 ```
 
-## 🎯 Usage
+---
 
-### Commands
+## 🔧 API Endpoints
 
-| Command | Description |
-|---------|-------------|
-| `RepoPilot: Open Chat` | Open the chat panel |
-| `RepoPilot: Index Workspace` | Re-index the current workspace |
-| `RepoPilot: Ask About Selection` | Ask about selected code |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Check backend status |
+| `/repo/load` | POST | Clone/load a repository |
+| `/repo/index` | POST | Index repository for RAG |
+| `/chat/ask` | POST | Ask a question |
+| `/chat/generate` | POST | Generate code |
 
-### Keyboard Shortcuts
+---
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Shift+R` | Open Chat |
-| `Ctrl+Shift+A` | Ask about selection |
+## 🧠 How It Works
 
-### Chat Commands
+```
+1. INDEX: Clone repo → Split into chunks → Embed with Gemini → Store in ChromaDB
+2. QUERY: Embed question → Search similar chunks → Send to Groq LLM → Return answer
+```
 
-- **Ask questions**: Just type naturally
-- **Generate code**: Prefix with `/generate`
+| Step | Tokens | Cost |
+|------|--------|------|
+| Index 100 files | ~150K | FREE (Gemini) |
+| Ask 1 question | ~3K | FREE (Groq) |
 
-## 🔑 API Keys
+---
 
-| Provider | Purpose | Get Key |
-|----------|---------|---------|
-| **Gemini** | Embeddings (FREE) | [aistudio.google.com](https://aistudio.google.com/apikey) |
-| **Groq** | Chat LLM (FREE) | [console.groq.com](https://console.groq.com) |
+## 🛠️ Development
+
+### Backend
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate    # Windows
+pip install -r requirements.txt
+uvicorn app.main:app --port 8001 --reload
+```
+
+### Extension
+
+```bash
+cd vscode-extension
+npm install
+npm run compile
+# Press F5 in VS Code to launch
+```
+
+---
+
+## 📝 Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GEMINI_API_KEY` | Yes | For embeddings |
+| `GROQ_API_KEY` | Yes | For chat completion |
+| `OPENAI_API_KEY` | No | Alternative LLM provider |
+| `MOCK_MODE` | No | Set `true` for testing without APIs |
+
+---
+
+## ❓ Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| "Cannot connect to backend" | Make sure backend is running on port 8001 |
+| "No API key" | Check your `.env` file has valid keys |
+| "Repository too large" | Max 50MB and 500 files by default |
+
+---
 
 ## 📚 Documentation
 
-- **[SETUP_GUIDE.md](./SETUP_GUIDE.md)** - Detailed setup instructions
-- **[roadmap.md](./roadmap.md)** - Complete feature roadmap
+- **[REPOPILOT_ASSESSMENT.md](./REPOPILOT_ASSESSMENT.md)** - Full technical assessment and requirements checklist
 
-## 🔧 Development
+---
 
-### Build Extension
-```powershell
-cd vscode-extension
-npm run compile    # Dev build
-npm run package    # Production build
-```
+## 👥 Team
 
-### Package for Distribution
-```powershell
-npm install -g @vscode/vsce
-vsce package
-# Creates: repopilot-1.0.0.vsix
-```
+**AlphaByte 3.0** | GDGC PCCE | Develop Design Innovate
 
-## 📜 License
+---
 
-MIT © RepoPilot Team
+## 📄 License
+
+MIT License - See LICENSE file for details.

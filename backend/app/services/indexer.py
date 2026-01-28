@@ -76,7 +76,8 @@ class Indexer:
         # Delete existing collection if any
         try:
             client.delete_collection("repo_index")
-        except ValueError:
+        except Exception:
+            # Collection doesn't exist or other error - safe to ignore
             pass
         
         collection = client.create_collection(
@@ -131,17 +132,26 @@ class Indexer:
     def get_collection(self, repo_id: str) -> Optional[chromadb.Collection]:
         """Get the collection for query purposes."""
         repo_info = repo_manager.get_repo(repo_id)
-        if not repo_info or not repo_info.indexed:
+        if not repo_info:
+            logger.warning("repo_not_found_for_collection", repo_id=repo_id)
+            return None
+        
+        # Try to open the collection directly without checking indexed flag
+        # (The collection on disk is the source of truth)
+        db_path = self._get_db_path(repo_info)
+        
+        if not db_path.exists():
+            logger.warning("db_path_not_found", repo_id=repo_id, path=str(db_path))
             return None
             
-        db_path = self._get_db_path(repo_info)
-        client = self._get_client(db_path)
-        
         try:
-            return client.get_collection("repo_index")
-        except ValueError:
-            # Collection doesn't exist yet
-            logger.warning("collection_not_found", repo_id=repo_id)
+            client = self._get_client(db_path)
+            collection = client.get_collection("repo_index")
+            logger.info("collection_opened", repo_id=repo_id, count=collection.count())
+            return collection
+        except Exception as e:
+            # Collection doesn't exist or other error
+            logger.warning("collection_not_found", repo_id=repo_id, error=str(e))
             return None
 
 
