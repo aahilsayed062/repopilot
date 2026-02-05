@@ -3,7 +3,8 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import {
   Send,
   Terminal,
@@ -24,7 +25,11 @@ import {
   X,
   RefreshCw,
   RotateCcw,
-  Download
+  Download,
+  Layers,
+  Database,
+  Zap,
+  Activity
 } from "lucide-react";
 
 // ============================================
@@ -97,6 +102,16 @@ const formatBytes = (bytes: number): string => {
 // SUB-COMPONENTS
 // ============================================
 
+// Fluid Background with animated blobs
+const FluidBackground = () => (
+  <div className="fluid-background">
+    <div className="fluid-blob fluid-blob--mint" />
+    <div className="fluid-blob fluid-blob--lavender" />
+    <div className="fluid-blob fluid-blob--sunset" />
+  </div>
+);
+
+// Liquid Wave Typing Indicator
 const TypingIndicator = () => (
   <motion.div
     initial={{ opacity: 0, y: 10 }}
@@ -108,6 +123,7 @@ const TypingIndicator = () => (
     </div>
     <div className="message-bubble">
       <div className="typing-indicator">
+        <span></span>
         <span></span>
         <span></span>
         <span></span>
@@ -131,7 +147,7 @@ const CodeBlock = ({ code, language = 'text' }: CodeBlockProps) => {
   };
 
   return (
-    <div className="code-block message-enter">
+    <div className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{language}</span>
         <button
@@ -144,7 +160,7 @@ const CodeBlock = ({ code, language = 'text' }: CodeBlockProps) => {
       <div className="code-block-content p-0">
         <SyntaxHighlighter
           language={language.toLowerCase()}
-          style={vscDarkPlus}
+          style={oneDark}
           customStyle={{
             margin: 0,
             padding: '16px',
@@ -167,16 +183,17 @@ const Citations = ({ citations }: CitationsProps) => (
   <div className="citations-container">
     <div className="citations-title">
       <ExternalLink size={12} />
-      Sources Used ({citations.length})
+      Sources ({citations.length})
     </div>
     <div className="citations-list">
       {citations.map((cit, i) => (
         <motion.div
           key={i}
-          initial={{ opacity: 0, x: -10 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: i * 0.1 }}
+          initial={{ opacity: 0, x: -20, clipPath: 'inset(0 100% 0 0)' }}
+          animate={{ opacity: 1, x: 0, clipPath: 'inset(0 0 0 0)' }}
+          transition={{ delay: i * 0.1, duration: 0.4 }}
           className="citation-card"
+          style={{ '--index': i } as React.CSSProperties}
         >
           <div className="citation-content">
             <div className="citation-path">
@@ -263,14 +280,14 @@ export default function Home() {
         const res = await fetch("/api/health");
         const d = await res.json();
         if (d.mock_mode) {
-          setStatus("System: Mock Mode (No API Keys)");
+          setStatus("Mock Mode Active");
           setStatusType('warning');
         } else {
-          setStatus("System: Online & Ready");
+          setStatus("Connected");
           setStatusType('success');
         }
       } catch (e) {
-        setStatus("System: Offline (Backend Unreachable)");
+        setStatus("Offline");
         setStatusType('error');
       }
     };
@@ -280,10 +297,10 @@ export default function Home() {
   // Load Repo
   const loadRepo = async () => {
     if (!repoUrl.trim()) return;
-    if (isLoading || isIndexing) return; // Prevent concurrent operations
+    if (isLoading || isIndexing) return;
 
     setIsLoading(true);
-    setStatus("Loading repository...");
+    setStatus("Loading...");
     setStatusType('default');
     setLastError(null);
 
@@ -301,15 +318,14 @@ export default function Home() {
       setRepoName(data.repo_name);
       setCommitHash(data.commit_hash || null);
       setStats(data.stats);
-      setStatus(`Loaded: ${data.repo_name}`);
+      setStatus(`${data.repo_name}`);
       setStatusType('success');
 
-      // Auto-index
       await indexRepo(data.repo_id, false);
 
     } catch (e: unknown) {
       const error = e as Error;
-      setStatus(`Error: ${error.message}`);
+      setStatus(error.message);
       setStatusType('error');
       setLastError({ type: 'index', message: error.message, retry: loadRepo });
     } finally {
@@ -317,15 +333,12 @@ export default function Home() {
     }
   };
 
-  // Index Repo (with lock and force option)
+  // Index Repo
   const indexRepo = async (id: string, force: boolean = false) => {
-    if (isIndexing) {
-      console.warn('Indexing already in progress');
-      return;
-    }
+    if (isIndexing) return;
 
     setIsIndexing(true);
-    setStatus("Indexing code chunks...");
+    setStatus("Indexing...");
     setStatusType('default');
     setLastError(null);
 
@@ -341,10 +354,9 @@ export default function Home() {
 
       setIsIndexed(true);
       setChunkCount(data.chunk_count || 0);
-      setStatus(`Ready • ${data.chunk_count} chunks indexed`);
+      setStatus("Ready");
       setStatusType('success');
 
-      // Get files
       const statusRes = await fetch(`/api/repo/status?repo_id=${id}&include_files=true`);
       if (statusRes.ok) {
         const statusData = await statusRes.json();
@@ -353,7 +365,7 @@ export default function Home() {
 
     } catch (e: unknown) {
       const error = e as Error;
-      setStatus(`Error: ${error.message}`);
+      setStatus(error.message);
       setStatusType('error');
       setLastError({ type: 'index', message: error.message, retry: () => indexRepo(id, force) });
     } finally {
@@ -361,14 +373,13 @@ export default function Home() {
     }
   };
 
-  // Reindex (force)
   const handleReindex = () => {
     if (repoId && !isIndexing) {
       indexRepo(repoId, true);
     }
   };
 
-  // Export conversation to markdown
+  // Export conversation
   const exportToMarkdown = () => {
     if (messages.length === 0) return;
 
@@ -376,7 +387,7 @@ export default function Home() {
     md += `**Repository:** ${repoName || 'Unknown'}\n`;
     md += `**Exported:** ${new Date().toLocaleString()}\n\n---\n\n`;
 
-    messages.forEach((msg, i) => {
+    messages.forEach((msg) => {
       if (msg.role === 'user') {
         md += `## 💬 User\n\n${msg.content}\n\n`;
       } else {
@@ -408,7 +419,6 @@ export default function Home() {
       md += '---\n\n';
     });
 
-    // Trigger download
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -442,7 +452,7 @@ export default function Home() {
 
         setMessages(prev => [...prev, {
           role: "assistant",
-          content: data.plan || "I've generated a set of changes based on your request. Review the plan and diffs below:",
+          content: data.plan || "Generated changes based on your request:",
           diffs: data.diffs,
           tests: data.tests,
           citations: data.citations?.map((c: string) => ({
@@ -475,7 +485,7 @@ export default function Home() {
       const error = e as Error;
       setMessages(prev => [...prev, {
         role: "assistant",
-        content: `Something went wrong: ${error.message}`
+        content: `Error: ${error.message}`
       }]);
     } finally {
       setIsChatLoading(false);
@@ -495,8 +505,8 @@ export default function Home() {
 
   return (
     <div className="app-layout">
-      {/* Ambient Background */}
-      <div className="ambient-glow" />
+      {/* Fluid Background */}
+      <FluidBackground />
 
       {/* Header */}
       <motion.header
@@ -513,21 +523,39 @@ export default function Home() {
             {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
           <div className="header-logo">
-            <Cpu size={22} />
+            <Terminal size={20} />
           </div>
           <h1 className="header-title hidden sm:block">RepoPilot</h1>
         </div>
 
-        <div className={`header-status ${statusType}`}>
-          {statusType === 'success' && <CheckCircle2 size={14} className="animate-pulse" />}
-          {statusType === 'error' && <AlertCircle size={14} />}
-          {statusType === 'warning' && <Info size={14} />}
-          {statusType === 'default' && <Loader2 size={14} className="animate-spin" />}
-          {status}
+        {/* Live Stats HUD */}
+        <div className="header-stats">
+          {isIndexed && (
+            <>
+              <div className="stat-pill stat-pill--active">
+                <Layers size={14} />
+                <span>{chunkCount} chunks</span>
+              </div>
+              {stats && (
+                <div className="stat-pill">
+                  <FileCode size={14} />
+                  <span>{stats.total_files} files</span>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
-        <div className="flex gap-4">
-          <a href="https://github.com/repopilot" target="_blank" className="btn-ghost">
+        <div className="flex items-center gap-4">
+          <div className={`header-status ${statusType}`}>
+            {statusType === 'success' && <Activity size={14} />}
+            {statusType === 'error' && <AlertCircle size={14} />}
+            {statusType === 'warning' && <Info size={14} />}
+            {statusType === 'default' && <Loader2 size={14} className="animate-spin" />}
+            <span className="status-dot status-dot--animated" />
+            {status}
+          </div>
+          <a href="https://github.com" target="_blank" className="btn-ghost" aria-label="GitHub">
             <Github size={18} />
           </a>
         </div>
@@ -559,7 +587,7 @@ export default function Home() {
           >
             <h3 className="sidebar-title">
               <Github size={14} />
-              Connection
+              Repository
             </h3>
             <div className="repo-input-group">
               <input
@@ -573,7 +601,7 @@ export default function Home() {
               <button
                 onClick={loadRepo}
                 disabled={isLoading || isIndexing}
-                className="btn btn-primary btn-full shadow-glow-coral"
+                className="btn btn-primary btn-full"
               >
                 {isLoading ? (
                   <>
@@ -586,7 +614,10 @@ export default function Home() {
                     Indexing...
                   </>
                 ) : (
-                  'Connect Repository'
+                  <>
+                    <Zap size={16} />
+                    Connect
+                  </>
                 )}
               </button>
 
@@ -605,11 +636,12 @@ export default function Home() {
                   ) : (
                     <>
                       <RefreshCw size={14} />
-                      Reindex ({chunkCount} chunks)
+                      Reindex
                     </>
                   )}
                 </button>
               )}
+
             </div>
 
             {/* Stats */}
@@ -629,6 +661,15 @@ export default function Home() {
                     <div className="stat-label">Size</div>
                   </div>
                 </div>
+
+                {/* Chunk Counter */}
+                {isIndexed && (
+                  <div className="chunk-counter">
+                    <Database size={16} />
+                    <span className="chunk-counter__value">{chunkCount}</span>
+                    <span className="chunk-counter__label">indexed chunks</span>
+                  </div>
+                )}
 
                 <div className="language-tags">
                   {Object.entries(stats.languages)
@@ -657,18 +698,18 @@ export default function Home() {
               >
                 <h3 className="sidebar-title">
                   <FolderRoot size={14} />
-                  Code Explorer
+                  Files ({files.length})
                 </h3>
                 <div className="file-list">
                   {files.slice(0, 40).map((f, i) => (
-                    <div key={i} className="file-item group cursor-pointer" title={f.file_path}>
-                      <FileCode size={14} className="group-hover:text-brand-periwinkle transition-colors" />
+                    <div key={i} className="file-item group" title={f.file_path}>
+                      <FileCode size={14} />
                       <span className="truncate">{f.file_path.split('/').pop()}</span>
                     </div>
                   ))}
                   {files.length > 40 && (
                     <div className="file-item text-tertiary italic text-[11px] justify-center pt-2">
-                      + {files.length - 40} additional files
+                      + {files.length - 40} more files
                     </div>
                   )}
                 </div>
@@ -683,7 +724,7 @@ export default function Home() {
             transition={{ delay: 0.4 }}
             className="tip-box"
           >
-            <strong>Pro Tip:</strong> Use <code>/generate</code> followed by a feature request to see RepoPilot create code patches instantly.
+            <strong>Pro Tip:</strong> Use <code>/generate</code> followed by a feature request to create code patches.
           </motion.div>
         </aside>
 
@@ -706,7 +747,8 @@ export default function Home() {
               )}
               {isIndexed && (
                 <div className="badge badge-success text-[10px] py-1">
-                  KNOWLEDGE BASE ACTIVE
+                  <Zap size={10} />
+                  READY
                 </div>
               )}
             </div>
@@ -750,7 +792,7 @@ export default function Home() {
             <AnimatePresence mode="popLayout">
               {messages.length === 0 ? (
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
+                  initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
                   key="empty"
                   className="empty-state"
@@ -759,14 +801,14 @@ export default function Home() {
                     <MessageSquare size={36} />
                   </div>
                   <p className="empty-state-text">
-                    Welcome to RepoPilot. Connect a repository above to start exploring your code with AI.
+                    Connect a repository above to start exploring your code with AI assistance.
                   </p>
-                  <div className="flex gap-2 mt-4">
-                    {['Explain the architecture', 'How do I add a new endpoint?', 'Find vulnerabilities'].map(q => (
+                  <div className="flex gap-2 mt-4 flex-wrap justify-center">
+                    {['Explain the architecture', 'Find vulnerabilities', 'How do I add a new endpoint?'].map(q => (
                       <button
                         key={q}
                         onClick={() => setInput(q)}
-                        className="btn-ghost text-xs border border-white/5 rounded-full px-4"
+                        className="btn-ghost text-xs border border-white/10 rounded-full px-4 py-2"
                       >
                         {q}
                       </button>
@@ -778,8 +820,8 @@ export default function Home() {
                   <motion.div
                     layout
                     key={i}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
+                    initial={{ opacity: 0, y: 20, scaleY: 0.8 }}
+                    animate={{ opacity: 1, y: 0, scaleY: 1 }}
                     transition={{ type: "spring", damping: 20, stiffness: 100 }}
                     className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
                   >
@@ -838,7 +880,7 @@ export default function Home() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isIndexed ? "Ask anything about your code..." : "Connecting to repository..."}
+                placeholder={isIndexed ? "Ask anything about your code..." : "Connect a repository to start..."}
                 disabled={!isIndexed || isChatLoading}
                 className="chat-input"
               />
