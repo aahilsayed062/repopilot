@@ -10,9 +10,10 @@ Note: Embeddings are handled separately in embeddings.py (uses Gemini)
 """
 
 import os
+import asyncio
 from typing import List, Optional, Dict, Any
 import backoff
-from openai import AsyncOpenAI, OpenAIError
+from openai import AsyncOpenAI, OpenAIError, RateLimitError
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
@@ -98,6 +99,13 @@ class LLMService:
                     logger.error("gemini_fallback_failed", error=str(e2))
             raise
             
+    @backoff.on_exception(
+        backoff.expo,
+        RateLimitError,
+        max_tries=5,
+        max_time=120,
+        factor=3  # Longer waits for rate limits: 3, 9, 27, 81 seconds
+    )
     @backoff.on_exception(backoff.expo, OpenAIError, max_tries=3)
     async def _call_openai(self, messages, temperature, model, json_mode):
         model = model or settings.openai_chat_model

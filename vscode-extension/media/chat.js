@@ -14,6 +14,7 @@
     const sendBtn = document.getElementById('btn-send');
     const indexBtn = document.getElementById('btn-index');
     const generateBtn = document.getElementById('btn-generate');
+    const testsBtn = document.getElementById('btn-tests');
 
     // State
     let isLoading = false;
@@ -46,6 +47,7 @@
         const canAsk = status === 'ready';
         sendBtn.disabled = !canAsk || isLoading;
         generateBtn.disabled = !canAsk || isLoading;
+        if (testsBtn) testsBtn.disabled = !canAsk || isLoading;
         indexBtn.disabled = isLoading;
     }
 
@@ -56,6 +58,7 @@
         isLoading = loading;
         sendBtn.disabled = loading || currentStatus !== 'ready';
         generateBtn.disabled = loading || currentStatus !== 'ready';
+        if (testsBtn) testsBtn.disabled = loading || currentStatus !== 'ready';
         indexBtn.disabled = loading;
         inputEl.disabled = loading;
 
@@ -175,6 +178,42 @@
     }
 
     /**
+     * Basic syntax highlighting for code
+     */
+    function highlightCode(code, lang) {
+        if (!code) return '';
+
+        // Language-specific keyword sets
+        const pythonKeywords = /\b(def|class|if|elif|else|for|while|try|except|finally|with|as|import|from|return|yield|raise|break|continue|pass|async|await|lambda|and|or|not|in|is|None|True|False|self)\b/g;
+        const jsKeywords = /\b(function|const|let|var|if|else|for|while|do|switch|case|break|continue|return|try|catch|finally|throw|class|extends|import|export|from|async|await|new|this|typeof|instanceof|null|undefined|true|false)\b/g;
+
+        let highlighted = code;
+
+        // Apply language-specific highlighting
+        if (lang === 'python' || lang === 'py') {
+            // Python comments
+            highlighted = highlighted.replace(/(#.*)$/gm, '<span class="hl-comment">$1</span>');
+            // Python keywords
+            highlighted = highlighted.replace(pythonKeywords, '<span class="hl-keyword">$1</span>');
+            // Decorators
+            highlighted = highlighted.replace(/(@\w+)/g, '<span class="hl-decorator">$1</span>');
+        } else if (lang === 'javascript' || lang === 'js' || lang === 'typescript' || lang === 'ts') {
+            // JS comments
+            highlighted = highlighted.replace(/(\/\/.*)$/gm, '<span class="hl-comment">$1</span>');
+            // JS keywords
+            highlighted = highlighted.replace(jsKeywords, '<span class="hl-keyword">$1</span>');
+        }
+
+        // Common patterns for all languages
+        // Strings (double and single quotes) - simplified to avoid regex issues
+        highlighted = highlighted.replace(/(&quot;[^&]*&quot;|'[^']*')/g, '<span class="hl-string">$1</span>');
+        // Numbers
+        highlighted = highlighted.replace(/\b(\d+\.?\d*)\b/g, '<span class="hl-number">$1</span>');
+
+        return highlighted;
+    }
+
+    /**
      * Parse basic markdown to HTML
      */
     function parseMarkdown(text) {
@@ -186,15 +225,16 @@
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
 
-        // Code blocks with copy button
+        // Code blocks with copy button and syntax highlighting
         html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (match, lang, code) => {
             const escapedCode = code.trim();
+            const highlightedCode = highlightCode(escapedCode, lang || 'code');
             return `<div class="code-block-wrapper">
         <div class="code-block-header">
           <span class="code-lang">${lang || 'code'}</span>
           <button class="copy-btn" data-code="${escapedCode.replace(/"/g, '&quot;')}" title="Copy code">📋 Copy</button>
         </div>
-        <pre><code class="language-${lang}">${escapedCode}</code></pre>
+        <pre><code class="language-${lang}">${highlightedCode}</code></pre>
       </div>`;
         });
 
@@ -299,6 +339,16 @@
             inputEl.focus();
         }
     });
+
+    // Tests button handler
+    if (testsBtn) {
+        testsBtn.addEventListener('click', () => {
+            const text = inputEl.value.trim();
+            addMessage('user', '🧪 Generate tests' + (text ? `: ${text}` : ''));
+            inputEl.value = '';
+            vscode.postMessage({ type: 'GENERATE_TESTS', customRequest: text || undefined });
+        });
+    }
 
     // Copy button handler (event delegation)
     document.addEventListener('click', (e) => {

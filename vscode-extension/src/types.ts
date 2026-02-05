@@ -140,6 +140,7 @@ export interface PyTestResponse {
 export type WebviewToExtensionMessage =
     | { type: 'ASK'; question: string }
     | { type: 'GENERATE'; request: string }
+    | { type: 'GENERATE_TESTS'; customRequest?: string }
     | { type: 'INDEX_WORKSPACE' }
     | { type: 'OPEN_CITATION'; file_path: string; start_line?: number; end_line?: number }
     | { type: 'READY' }

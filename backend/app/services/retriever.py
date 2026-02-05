@@ -18,7 +18,8 @@ class Retriever:
     Retrieves relevant chunks for a query using semantic search.
     """
     
-    def __init__(self, default_k: int = 8):
+    def __init__(self, default_k: int = 4):
+        # Reduced from 8 to 4 to stay within Groq's 12k TPM limit
         self.default_k = default_k
     
     async def retrieve(self, repo_id: str, query: str, k: int = None) -> List[Chunk]:

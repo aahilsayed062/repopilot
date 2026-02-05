@@ -339,6 +339,34 @@ body {
   padding: 0;
 }
 
+/* Syntax Highlighting Classes */
+.hl-keyword {
+  color: #c678dd;
+  /* Purple for keywords */
+  font-weight: 500;
+}
+
+.hl-string {
+  color: #98c379;
+  /* Green for strings */
+}
+
+.hl-comment {
+  color: #5c6370;
+  /* Gray for comments */
+  font-style: italic;
+}
+
+.hl-number {
+  color: #d19a66;
+  /* Orange for numbers */
+}
+
+.hl-decorator {
+  color: var(--brand-coral);
+  /* Coral for decorators */
+}
+
 /* ==========================================================================
    Input Area - Floating & Dynamic
    ========================================================================== */
@@ -538,4 +566,100 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* ==========================================================================
+   Loading States - Polished Animations
+   ========================================================================== */
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg,
+      rgba(184, 192, 255, 0.05) 0%,
+      rgba(239, 131, 84, 0.05) 100%);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  margin: 8px 0;
+  animation: fadeInUp 0.3s ease;
+}
+
+.loading-indicator span {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--brand-coral);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Toast Notifications */
+.toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--brand-navy);
+  color: white;
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  z-index: 1000;
+  animation: slideUpFade 0.3s ease, fadeOut 0.3s ease 3.7s forwards;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes fadeOut {
+  to {
+    opacity: 0;
+  }
 }

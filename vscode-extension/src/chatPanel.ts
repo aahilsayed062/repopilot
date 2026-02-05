@@ -178,6 +178,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             case 'RUN_TESTS':
                 await this._handleRunTests();
                 break;
+
+            case 'GENERATE_TESTS':
+                await this._handleGenerateTests(message.customRequest);
+                break;
         }
     }
 
@@ -370,6 +374,59 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Handle generate tests (PyTest)
+     */
+    private async _handleGenerateTests(customRequest?: string): Promise<void> {
+        if (!this._repoId) {
+            this.postMessage({
+                type: 'ERROR_TOAST',
+                message: 'No repository indexed. Click "Index Workspace" first.',
+            });
+            return;
+        }
+
+        this.postMessage({ type: 'LOADING', loading: true });
+
+        try {
+            const response = await api.generatePyTest(this._repoId, {
+                customRequest: customRequest || 'Generate tests for the main functionality'
+            });
+
+            if (response.success && response.tests) {
+                this._lastGeneratedTests = response.tests;
+
+                // Format response with test code
+                let content = `## 🧪 Generated Tests\n\n`;
+                content += `**File:** \`${response.test_file_name}\`\n\n`;
+                content += `${response.explanation}\n\n`;
+                content += `\`\`\`python\n${response.tests}\n\`\`\`\n\n`;
+
+                if (response.coverage_notes?.length > 0) {
+                    content += `**Coverage Notes:**\n`;
+                    response.coverage_notes.forEach((note: string) => {
+                        content += `- ${note}\n`;
+                    });
+                }
+
+                this.postMessage({
+                    type: 'MESSAGE_APPEND',
+                    role: 'assistant',
+                    content,
+                    citations: response.source_files?.map((f: string) => ({ file_path: f, line_range: '', snippet: '', why: 'Source file' })) || [],
+                    buttons: [{ label: '▶️ Run Tests', action: 'RUN_TESTS' }]
+                });
+            } else {
+                throw new Error(response.error || 'Failed to generate tests');
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to generate tests';
+            this.postMessage({ type: 'MESSAGE_APPEND', role: 'assistant', content: `❌ ${message}` });
+        } finally {
+            this.postMessage({ type: 'LOADING', loading: false });
+        }
+    }
+
+    /**
      * Handle index workspace
      */
     private async _handleIndexWorkspace(): Promise<void> {
@@ -520,6 +577,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       <div class="button-row">
         <button id="btn-index" class="action-btn" title="Index Workspace">
           📁 Index
+        </button>
+        <button id="btn-tests" class="action-btn secondary" title="Generate PyTest Tests">
+          🧪 Tests
         </button>
         <button id="btn-generate" class="action-btn secondary" title="Generate Code (prefix with /generate)">
           ⚡ Generate

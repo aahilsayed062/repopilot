@@ -39,7 +39,7 @@ export class ApiError extends Error {
  */
 function getBackendUrl(): string {
     const config = vscode.workspace.getConfiguration('repopilot');
-    return config.get<string>('backendUrl', 'http://localhost:8001');
+    return config.get<string>('backendUrl', 'http://localhost:8000');
 }
 
 /**
