@@ -198,7 +198,7 @@ npm run compile
 
 ## 👥 Team
 
-**AlphaByte 3.0** | GDGC PCCE | Develop Design Innovate
+**AlphaByte 3.0** | GDGC PCCOE | Develop Design Innovate
 
 ---
 
