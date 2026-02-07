@@ -68,7 +68,7 @@
 - **Code Generation** - Generate code with diffs and PyTest files
 - **Right-Click Actions** - Ask RepoPilot about selected code
 - **Clickable Citations** - Jump directly to referenced files
-- **PS2-Compliant Responses** - Judge-proof 8-section response format
+- **PS7-Compliant Responses** - Judge-proof 8-section response format
 
 ## 📋 Prerequisites
 
@@ -178,7 +178,7 @@ vscode-extension/
 │   ├── commands.ts         # VS Code command handlers
 │   ├── codeActions.ts      # Right-click selection actions
 │   ├── fileOpener.ts       # Open citations in editor
-│   ├── responseFormatter.ts# PS2 judge-proof formatting
+│   ├── responseFormatter.ts# PS7 judge-proof formatting
 │   ├── storage.ts          # State persistence
 │   └── types.ts            # TypeScript interfaces
 ├── media/
@@ -196,7 +196,7 @@ vscode-extension/
 - `POST /chat/ask` - Grounded Q&A
 - `POST /chat/generate` - Code generation
 
-## 🎨 PS2 Judge-Proof Response Format
+## 🎨 PS7 Judge-Proof Response Format
 
 Every response includes these 8 sections:
 1. 🧩 **Query Decomposition** - Sub-questions breakdown
@@ -232,3 +232,4 @@ When evidence is missing or conflicting:
 ## 📝 License
 
 Part of the RepoPilot AI project.
+

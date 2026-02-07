@@ -6,7 +6,7 @@ import sys
 
 BASE_URL = "http://localhost:8000"
 REPO_ID = "f36207ab8c1e" # From previous step
-RESULTS_FILE = "ps2_results.json"
+RESULTS_FILE = "ps7_results.json"
 
 TEST_CASES = [
     # --- Grounded Q&A ---
@@ -33,7 +33,7 @@ TEST_CASES = [
 ]
 
 def run_verification():
-    print(f"Starting PS2 Verification for Repo ID: {REPO_ID}")
+    print(f"Starting PS7 Verification for Repo ID: {REPO_ID}")
     results = {}
 
     # 1. Indexing
