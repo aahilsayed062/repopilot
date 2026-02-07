@@ -9,6 +9,7 @@ venv/
 # Node
 node_modules/
 .next/
+.next-runtime/
 out/
 build/
 dist/
