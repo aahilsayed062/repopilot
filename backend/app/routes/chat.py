@@ -11,7 +11,7 @@ from app.services.retriever import retriever
 from app.services.answerer import answerer
 from app.services.generator import generator, CodeGenerationRequest, GenerationResponse
 from app.services.planner import planner
-from app.services.test_generator import test_generator
+from app.services.planner import planner
 from app.utils.logger import get_logger
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -102,7 +102,8 @@ async def generate_pytest(request: PyTestRequest) -> PyTestResponse:
     - Otherwise, generates tests for main functionality
     """
     try:
-        result = await test_generator.generate_tests(
+        # Use the 'generator' service which now has generate_tests
+        result = await generator.generate_tests(
             repo_id=request.repo_id,
             target_file=request.target_file,
             target_function=request.target_function,

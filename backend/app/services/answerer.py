@@ -59,14 +59,15 @@ class Answerer:
 Rules:
 1. If you have context from the codebase, use it to answer accurately.
 2. ALWAYS cite your sources with file_path and line_range from the context.
-3. If no relevant context is found, provide helpful general information and set confidence to "low".
-4. Be concise and actionable.
+3. For each citation, you MUST provide a "why" field explaining SPECIFICALLY why this file is relevant (e.g., "Contains the main API login logic", "Defines the User model").
+4. If no relevant context is found, provide helpful general information and set confidence to "low".
+5. Be concise and actionable.
 
 IMPORTANT: Return your response as a JSON object with this exact structure:
 {
     "answer": "Your answer here as plain markdown text. Do NOT include JSON in this field.",
     "citations": [
-        {"file_path": "path/to/file", "line_range": "L10-L20", "snippet": "relevant code", "why": "reason this is relevant"}
+        {"file_path": "path/to/file", "line_range": "L10-L20", "snippet": "relevant code", "why": "Explanation of why this specific file/lines were used for the answer"}
     ],
     "confidence": "high" or "medium" or "low",
     "assumptions": ["any assumptions made"]
@@ -123,9 +124,19 @@ CRITICAL: You MUST include citations for every source you reference. If you ment
             conf_match = re.search(r'"confidence"\s*:\s*"?(high|medium|low)"?', clean_text, re.IGNORECASE)
             confidence = conf_match.group(1).lower() if conf_match else "medium"
             
+            # Try to extract citations with why (best effort)
+            citations = []
+            # This is a simple regex and might miss complex nested JSON, but it's a fallback
+            citation_matches = re.finditer(r'\{\s*"file_path":\s*"(.*?)".*?"why":\s*"(.*?)"', clean_text, re.DOTALL)
+            for cm in citation_matches:
+                citations.append({
+                    "file_path": cm.group(1),
+                    "why": cm.group(2)
+                })
+
             return {
                 "answer": answer,
-                "citations": [],
+                "citations": citations,
                 "confidence": confidence,
                 "assumptions": []
             }
