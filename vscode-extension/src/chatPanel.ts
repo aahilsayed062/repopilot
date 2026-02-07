@@ -527,9 +527,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const styleUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'media', 'chat.css')
         );
-        const iconUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, 'media', 'icon.svg')
-        );
 
         const nonce = getNonce();
 
@@ -540,55 +537,69 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <link href="${styleUri}" rel="stylesheet">
-  <title>RepoPilot Chat</title>
+  <title>RepoPilot</title>
 </head>
 <body>
-  <div class="chat-container">
-    <div class="header">
-        <div class="title-group">
-            <svg class="header-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 4C16.42 4 20 7.58 20 12C20 16.42 16.42 20 12 20C7.58 20 4 16.42 4 12C4 7.58 7.58 4 12 4Z" fill="currentColor" fill-opacity="0.3"/>
-                <path d="M12 6C8.69 6 6 8.69 6 12C6 15.31 8.69 18 12 18C15.31 18 18 15.31 18 12C18 8.69 15.31 6 12 6ZM12 16C9.79 16 8 14.21 8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12C16 14.21 14.21 16 12 16Z" fill="currentColor"/>
-                <path d="M10 11H8V13H10V11Z" fill="currentColor"/>
-                <path d="M16 11H14V13H16V11Z" fill="currentColor"/>
-            </svg>
-            <span>RepoPilot AI</span>
-        </div>
-        <button id="btn-export" class="icon-btn" title="Export Chat">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M19 9H15V3H9V9H5L12 17L19 9ZM5 19V21H19V19H5Z" fill="currentColor"/>
-            </svg>
-        </button>
-    </div>
+  <!-- Fluid Background -->
+  <div class="fluid-background">
+    <div class="fluid-blob blob-1"></div>
+    <div class="fluid-blob blob-2"></div>
+  </div>
 
-    <div class="status-bar" id="status-bar">
-      <span class="status-dot" id="status-dot"></span>
-      <span class="status-text" id="status-text">Connecting...</span>
+  <div class="chat-layout">
+    <!-- Glass Header -->
+    <div class="glass-header">
+        <div class="header-brand">
+            <svg class="header-icon" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2L2 7l10 5 10-5-10-5zm0 9l2.5-1.25L12 8.5l-2.5 1.25L12 11zm0 2.5l-5-2.5-5 2.5L12 22l10-8.5-5-2.5-5 2.5z"/>
+            </svg>
+            <span>RepoPilot</span>
+        </div>
+        <div class="status-badge">
+            <div class="status-dot" id="status-dot"></div>
+            <span id="status-text">Connecting...</span>
+        </div>
     </div>
     
-    <div class="messages" id="messages">
-      <div class="welcome-message">
-        <h3>🚀 Welcome to RepoPilot AI</h3>
-        <p>Ask questions about your codebase or generate code with repository-grounded answers.</p>
+    <!-- Messages -->
+    <div class="messages-container" id="messages">
+      <div class="message assistant">
+        <div class="message-bubble">
+          <p><strong>🚀 RepoPilot Ready</strong></p>
+          <p>I'm connected to your codebase. Ask me anything!</p>
+        </div>
       </div>
     </div>
     
+    <!-- Input Area -->
     <div class="input-area">
-      <div class="button-row">
-        <button id="btn-index" class="action-btn" title="Index Workspace">
-          📁 Index
+      <div class="action-buttons">
+        <button id="btn-index" class="chip">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+            </svg>
+            Index
         </button>
-        <button id="btn-tests" class="action-btn secondary" title="Generate PyTest Tests">
-          🧪 Tests
+        <button id="btn-tests" class="chip">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path>
+            </svg>
+            Tests
         </button>
-        <button id="btn-generate" class="action-btn secondary" title="Generate Code (prefix with /generate)">
-          ⚡ Generate
+        <button id="btn-generate" class="chip">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+            </svg>
+            Generate
         </button>
       </div>
-      <div class="input-row">
-        <textarea id="input" placeholder="Ask about your code..." rows="2"></textarea>
-        <button id="btn-send" class="send-btn" title="Send">
-          ➤
+      
+      <div class="input-container">
+        <textarea id="input" placeholder="Ask about your code..." rows="1"></textarea>
+        <button id="btn-send" class="send-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path>
+          </svg>
         </button>
       </div>
     </div>
