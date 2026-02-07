@@ -32,7 +32,12 @@ def add_request_id(logger, method_name, event_dict):
 
 def setup_logging(debug: bool = False):
     """Configure structured logging for the application."""
-    
+    # Ensure console logging can print any unicode from repositories/errors on Windows.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     # Set log level
     log_level = logging.DEBUG if debug else logging.INFO
     

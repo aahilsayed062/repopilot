@@ -42,24 +42,89 @@ function getBackendUrl(): string {
     return config.get<string>('backendUrl', 'http://localhost:8000');
 }
 
+function normalizeBackendUrl(url: string): string {
+    return url.trim().replace(/\/+$/, '');
+}
+
+function buildFallbackUrls(currentUrl: string): string[] {
+    const current = normalizeBackendUrl(currentUrl);
+    const candidates = new Set<string>();
+
+    const add = (url: string) => {
+        const normalized = normalizeBackendUrl(url);
+        if (normalized && normalized !== current) {
+            candidates.add(normalized);
+        }
+    };
+
+    add('http://localhost:8000');
+    add('http://127.0.0.1:8000');
+
+    if (current.includes('localhost')) {
+        add(current.replace('localhost', '127.0.0.1'));
+    }
+    if (current.includes('127.0.0.1')) {
+        add(current.replace('127.0.0.1', 'localhost'));
+    }
+
+    if (current.includes(':8001')) {
+        add(current.replace(':8001', ':8000'));
+    }
+
+    return Array.from(candidates);
+}
+
+async function isHealthyAt(baseUrl: string): Promise<boolean> {
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const response = await fetch(`${normalizeBackendUrl(baseUrl)}/health`, {
+            signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        return response.ok;
+    } catch {
+        return false;
+    }
+}
+
+async function updateBackendUrlSetting(nextUrl: string): Promise<void> {
+    const config = vscode.workspace.getConfiguration('repopilot');
+    const inspect = config.inspect<string>('backendUrl');
+
+    let target = vscode.ConfigurationTarget.Global;
+    if (inspect?.workspaceFolderValue !== undefined) {
+        target = vscode.ConfigurationTarget.WorkspaceFolder;
+    } else if (inspect?.workspaceValue !== undefined) {
+        target = vscode.ConfigurationTarget.Workspace;
+    }
+
+    await config.update('backendUrl', normalizeBackendUrl(nextUrl), target);
+}
+
 /**
  * Make a fetch request with proper error handling
  */
 async function fetchJson<T>(
     path: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    timeoutMs: number = 15000
 ): Promise<T> {
     const baseUrl = getBackendUrl();
     const url = `${baseUrl}${path}`;
 
     try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
         const response = await fetch(url, {
             ...options,
+            signal: controller.signal,
             headers: {
                 'Content-Type': 'application/json',
                 ...options.headers,
             },
         });
+        clearTimeout(timeout);
 
         if (!response.ok) {
             const errorBody = await response.text();
@@ -106,6 +171,20 @@ export async function isBackendHealthy(): Promise<boolean> {
         await checkHealth();
         return true;
     } catch {
+        const configuredUrl = getBackendUrl();
+        const fallbackUrls = buildFallbackUrls(configuredUrl);
+
+        for (const url of fallbackUrls) {
+            if (await isHealthyAt(url)) {
+                try {
+                    await updateBackendUrlSetting(url);
+                } catch {
+                    // Ignore settings update failures; health is still true.
+                }
+                return true;
+            }
+        }
+
         return false;
     }
 }
@@ -125,7 +204,7 @@ export async function loadRepo(
     return fetchJson<RepoLoadResponse>('/repo/load', {
         method: 'POST',
         body: JSON.stringify(body),
-    });
+    }, 150000); // 2.5 min -- cloning can be slow
 }
 
 /**
@@ -155,7 +234,7 @@ export async function indexRepo(
     return fetchJson<RepoIndexResponse>('/repo/index', {
         method: 'POST',
         body: JSON.stringify(body),
-    });
+    }, 300000); // 5 min -- indexing can be slow
 }
 
 /**
@@ -174,7 +253,7 @@ export async function askQuestion(
     return fetchJson<ChatResponse>('/chat/ask', {
         method: 'POST',
         body: JSON.stringify(body),
-    });
+    }, 120000); // 2 min -- LLM can be slow
 }
 
 /**
@@ -189,7 +268,7 @@ export async function generateCode(
     return fetchJson<GenerationResponse>('/chat/generate', {
         method: 'POST',
         body: JSON.stringify(body),
-    });
+    }, 120000); // 2 min -- LLM can be slow
 }
 
 /**
@@ -213,7 +292,7 @@ export async function generatePyTest(
     return fetchJson<PyTestResponse>('/chat/pytest', {
         method: 'POST',
         body: JSON.stringify(body),
-    });
+    }, 120000); // 2 min -- LLM can be slow
 }
 
 

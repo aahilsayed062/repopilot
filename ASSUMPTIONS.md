@@ -56,7 +56,7 @@ source venv/bin/activate       # Mac/Linux
 pip install -r requirements.txt
 
 # Run
-uvicorn app.main:app --port 8001 --reload
+uvicorn app.main:app --port 8000 --reload
 ```
 
 ### Extension Requirements

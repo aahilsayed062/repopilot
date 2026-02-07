@@ -59,14 +59,25 @@ class Settings(BaseSettings):
 
     
     # Repo constraints
-    max_repo_size_mb: int = 100  # Reject repos larger than this
-    max_files: int = 5000  # Maximum files to process
+    max_repo_size_mb: int = Field(default=512, validation_alias="MAX_REPO_SIZE_MB")
+    max_files: int = Field(default=10000, validation_alias="MAX_FILES")
+    clone_timeout_seconds: int = Field(default=900, validation_alias="CLONE_TIMEOUT_SECONDS")
     
     # Chunking
     code_chunk_lines: int = 150
     code_chunk_overlap: int = 20
     doc_chunk_tokens: int = 500
     doc_chunk_overlap: int = 100
+
+    # Indexing performance
+    index_batch_size: int = Field(default=250, validation_alias="INDEX_BATCH_SIZE")
+    file_read_concurrency: int = Field(default=32, validation_alias="FILE_READ_CONCURRENCY")
+    index_max_files: int = Field(default=900, validation_alias="INDEX_MAX_FILES")
+    index_max_file_size_kb: int = Field(default=256, validation_alias="INDEX_MAX_FILE_SIZE_KB")
+    index_max_total_mb: int = Field(default=20, validation_alias="INDEX_MAX_TOTAL_MB")
+    index_max_chunks: int = Field(default=2500, validation_alias="INDEX_MAX_CHUNKS")
+    index_time_budget_seconds: int = Field(default=55, validation_alias="INDEX_TIME_BUDGET_SECONDS")
+    use_persistent_index: bool = Field(default=False, validation_alias="USE_PERSISTENT_INDEX")
     
     # Retrieval
     top_k: int = 3

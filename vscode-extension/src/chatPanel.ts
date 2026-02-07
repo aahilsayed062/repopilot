@@ -105,6 +105,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Get current indexing/connection status
+     */
+    public getCurrentStatus(): IndexingStatus {
+        return this._currentStatus;
+    }
+
+    /**
      * Set repos ID (called from extension activation)
      */
     public setRepoInfo(repoId: string, repoName: string): void {

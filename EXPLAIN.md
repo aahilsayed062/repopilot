@@ -785,7 +785,7 @@ results = collection.query(
 
 ### Manual Testing Checklist
 
-1. **Health Check**: `GET http://localhost:8001/health`
+1. **Health Check**: `GET http://localhost:8000/health`
 2. **Load Repo**: Submit a GitHub URL
 3. **Index**: Click "Index" button
 4. **Ask Question**: "What does this project do?"

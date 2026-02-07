@@ -19,6 +19,33 @@ class Planner:
     Format: Return a JSON object with a 'sub_questions' list or null.
     Example: {"sub_questions": ["Where is X defined?", "How does Y call X?"]}
     """
+
+    def should_decompose(self, query: str) -> bool:
+        """
+        Heuristic gate to avoid unnecessary LLM decomposition latency.
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+        if len(q) < 90:
+            return False
+
+        complex_markers = [
+            "architecture",
+            "flow",
+            "end-to-end",
+            "across",
+            "interaction",
+            "dependency",
+            "dependencies",
+            "compare",
+            "tradeoff",
+            "refactor",
+            "security",
+            "performance",
+            "multi",
+        ]
+        return any(marker in q for marker in complex_markers)
     
     async def decompose(self, query: str) -> Optional[List[str]]:
         """

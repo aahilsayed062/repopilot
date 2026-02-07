@@ -90,6 +90,10 @@ async def get_repository_status(
         indexed=repo_info.indexed,
         stats=repo_info.stats,
         chunk_count=repo_info.chunk_count,
+        is_indexing=repo_info.is_indexing,
+        index_progress_pct=repo_info.index_progress_pct,
+        index_processed_chunks=repo_info.index_processed_chunks,
+        index_total_chunks=repo_info.index_total_chunks,
         files=files
     )
 

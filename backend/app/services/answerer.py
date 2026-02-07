@@ -9,7 +9,7 @@ from typing import List
 from app.utils.logger import get_logger
 from app.utils.llm import llm
 from app.models.chunk import Chunk
-from app.models.chat import ChatResponse, Citation, AnswerConfidence
+from app.models.chat import ChatResponse, AnswerConfidence
 
 logger = get_logger(__name__)
 
@@ -48,173 +48,363 @@ def _clean_answer_text(text: str) -> str:
 
 class Answerer:
     """
-    Generates answers using LLM and retrieved context.
+    Generates structured answers grounded in retrieved repository chunks.
     """
-    
-    # Limit per-chunk content to avoid token overflow
+
     MAX_CONTENT_LENGTH = 600
-    
-    SYSTEM_PROMPT = """You are RepoPilot, a helpful engineering assistant that answers questions about codebases.
+    MAX_CITATIONS = 5
 
-Rules:
-1. If you have context from the codebase, use it to answer accurately.
-2. ALWAYS cite your sources with file_path and line_range from the context.
-3. For each citation, you MUST provide a "why" field explaining SPECIFICALLY why this file is relevant (e.g., "Contains the main API login logic", "Defines the User model").
-4. If no relevant context is found, provide helpful general information and set confidence to "low".
-5. Be concise and actionable.
+    SYSTEM_PROMPT = """You are RepoPilot, an evidence-grounded engineering assistant.
 
-IMPORTANT: Return your response as a JSON object with this exact structure:
+Non-negotiable rules:
+1) Use ONLY the provided context.
+2) Every factual claim must be supported by one or more provided sources.
+3) If evidence is insufficient, say that clearly instead of guessing.
+4) Write like a strong senior engineer talking to a teammate: natural, warm, direct.
+5) Be direct and decisive when evidence is present.
+6) Return valid JSON with this exact schema:
 {
-    "answer": "Your answer here as plain markdown text. Do NOT include JSON in this field.",
-    "citations": [
-        {"file_path": "path/to/file", "line_range": "L10-L20", "snippet": "relevant code", "why": "Explanation of why this specific file/lines were used for the answer"}
-    ],
-    "confidence": "high" or "medium" or "low",
-    "assumptions": ["any assumptions made"]
+  "answer": "Markdown with sections: ## Short Answer, ## Evidence From Code, ## Practical Next Step",
+  "citations": [
+    {"file_path": "path/to/file", "line_range": "L10-L20", "snippet": "short snippet", "why": "why this supports the answer"}
+  ],
+  "confidence": "high|medium|low",
+  "assumptions": ["optional limitations or assumptions"]
 }
 
-CRITICAL: You MUST include citations for every source you reference. If you mention code from the context, cite it!
+Citation rules:
+- Use only file_path and line_range that exist in the provided sources.
+- If unsure, lower confidence and state limits.
+- Keep assumptions empty unless absolutely necessary.
+
+Style rules:
+- Do not sound robotic or legalistic.
+- Keep it technical but human.
+- In evidence bullets, mention source ids like [S1], [S2] where possible.
 """
-    
+
     def _generate_citations_from_chunks(self, chunks: List[Chunk]) -> List[dict]:
-        """Generate citation dicts from chunks as fallback."""
+        """Generate deterministic citations from retrieved chunks."""
         citations = []
-        for chunk in chunks[:5]:  # Limit to top 5
-            citations.append({
-                "file_path": chunk.file_path,
-                "line_range": chunk.line_range,
-                "snippet": chunk.content[:100] + "..." if len(chunk.content) > 100 else chunk.content,
-                "why": "Retrieved as relevant context"
-            })
+        for chunk in chunks[: self.MAX_CITATIONS]:
+            snippet = chunk.content.strip().replace("\n", " ")
+            if len(snippet) > 180:
+                snippet = snippet[:177] + "..."
+            citations.append(
+                {
+                    "file_path": chunk.file_path,
+                    "line_range": chunk.line_range,
+                    "snippet": snippet,
+                    "why": "Retrieved as relevant repository evidence.",
+                }
+            )
         return citations
-    
+
     def _parse_response(self, response_text: str) -> dict:
         """Parse LLM response into structured data."""
         clean_text = response_text.strip()
-        
-        # Remove markdown code blocks if present
+
         if clean_text.startswith("```"):
-            clean_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean_text, flags=re.MULTILINE)
-            clean_text = clean_text.strip()
-        
-        # Strategy 1: Direct JSON parse
+            clean_text = re.sub(
+                r"^```(?:json)?\s*|\s*```$", "", clean_text, flags=re.MULTILINE
+            ).strip()
+
         try:
-            data = json.loads(clean_text)
-            return data
+            return json.loads(clean_text)
         except json.JSONDecodeError:
             pass
-        
-        # Strategy 2: Fix missing braces
+
         if not clean_text.startswith("{"):
             try:
-                data = json.loads(f"{{{clean_text}}}")
-                return data
+                return json.loads(f"{{{clean_text}}}")
             except json.JSONDecodeError:
                 pass
-        
-        # Strategy 3: Regex extraction
+
         match = re.search(r'"answer"\s*:\s*"(.*?)(?<!\\)"', clean_text, re.DOTALL)
         if match:
             try:
-                answer = match.group(1).encode('utf-8').decode('unicode_escape')
+                answer = match.group(1).encode("utf-8").decode("unicode_escape")
             except Exception:
                 answer = match.group(1)
-            
-            # Try to extract confidence too
-            conf_match = re.search(r'"confidence"\s*:\s*"?(high|medium|low)"?', clean_text, re.IGNORECASE)
+
+            conf_match = re.search(
+                r'"confidence"\s*:\s*"?(high|medium|low)"?', clean_text, re.IGNORECASE
+            )
             confidence = conf_match.group(1).lower() if conf_match else "medium"
-            
-            # Try to extract citations with why (best effort)
-            citations = []
-            # This is a simple regex and might miss complex nested JSON, but it's a fallback
-            citation_matches = re.finditer(r'\{\s*"file_path":\s*"(.*?)".*?"why":\s*"(.*?)"', clean_text, re.DOTALL)
-            for cm in citation_matches:
-                citations.append({
-                    "file_path": cm.group(1),
-                    "why": cm.group(2)
-                })
 
             return {
                 "answer": answer,
-                "citations": citations,
+                "citations": [],
                 "confidence": confidence,
-                "assumptions": []
+                "assumptions": [],
             }
-        
-        return None
-    
+        return {}
+
+    def _normalize_line_range(self, line_range: str) -> str:
+        """Normalize line ranges to Lx-Ly format."""
+        if not isinstance(line_range, str):
+            return ""
+        cleaned = line_range.strip().upper().replace(" ", "")
+        cleaned = cleaned.replace("LINES", "L").replace("LINE", "L")
+        if re.match(r"^L\d+-L\d+$", cleaned):
+            return cleaned
+        if re.match(r"^L\d+$", cleaned):
+            return f"{cleaned}-{cleaned}"
+        return line_range.strip()
+
+    def _validate_citations(self, raw_citations: List[dict], chunks: List[Chunk]) -> List[dict]:
+        """Keep only citations that match retrieved chunks."""
+        chunk_map = {(c.file_path, c.line_range): c for c in chunks}
+        first_by_file = {}
+        for chunk in chunks:
+            first_by_file.setdefault(chunk.file_path, chunk)
+
+        valid: List[dict] = []
+        seen = set()
+
+        for cit in raw_citations or []:
+            if not isinstance(cit, dict):
+                continue
+            file_path = str(cit.get("file_path", "")).strip()
+            line_range = self._normalize_line_range(str(cit.get("line_range", "")).strip())
+
+            matched_chunk = chunk_map.get((file_path, line_range))
+            if not matched_chunk and file_path in first_by_file:
+                matched_chunk = first_by_file[file_path]
+                line_range = matched_chunk.line_range
+
+            if not matched_chunk:
+                continue
+
+            key = (matched_chunk.file_path, line_range)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            snippet = str(cit.get("snippet", "")).strip()
+            if not snippet:
+                snippet = matched_chunk.content.strip().replace("\n", " ")
+            if len(snippet) > 180:
+                snippet = snippet[:177] + "..."
+
+            why = str(cit.get("why", "")).strip() or "Supports the answer."
+            valid.append(
+                {
+                    "file_path": matched_chunk.file_path,
+                    "line_range": line_range,
+                    "snippet": snippet,
+                    "why": why,
+                }
+            )
+
+        return valid[: self.MAX_CITATIONS]
+
+    def _estimate_confidence(
+        self,
+        answer_text: str,
+        chunks: List[Chunk],
+        citations: List[dict],
+        assumptions: List[str],
+        llm_confidence: str,
+    ) -> AnswerConfidence:
+        """Compute confidence from evidence coverage, then calibrate downward if needed."""
+        if not chunks or not citations:
+            return AnswerConfidence.LOW
+
+        lowered_answer = answer_text.lower()
+        uncertainty_markers = [
+            "insufficient evidence",
+            "not enough context",
+            "cannot determine",
+            "unable to verify",
+            "not present in the provided context",
+            "no information provided",
+            "no files defining",
+        ]
+        if any(marker in lowered_answer for marker in uncertainty_markers):
+            return AnswerConfidence.LOW
+
+        cited_unique = len({(c["file_path"], c["line_range"]) for c in citations})
+        if cited_unique >= 3:
+            score = 2
+        elif cited_unique >= 2:
+            score = 1
+        else:
+            score = 0
+
+        llm_conf = str(llm_confidence or "").lower().strip()
+        if llm_conf == "high":
+            score = max(score, 2)
+        elif llm_conf == "medium":
+            score = max(score, 1)
+
+        if assumptions:
+            score = max(0, score - 1)
+
+        if score >= 2:
+            return AnswerConfidence.HIGH
+        if score == 1:
+            return AnswerConfidence.MEDIUM
+        return AnswerConfidence.LOW
+
+    def _ensure_structured_answer(
+        self, answer_text: str, citations: List[dict], assumptions: List[str]
+    ) -> str:
+        """Guarantee a structured answer format even on fallback paths."""
+        text = answer_text.strip()
+        text = re.sub(
+            r"(?im)^#\s*(Direct Answer|Answer|Short Answer)\s*$",
+            "## Short Answer",
+            text,
+        )
+        text = re.sub(
+            r"(?im)^#\s*(Evidence|Evidence From Code|Why This Is True)\s*$",
+            "## Evidence From Code",
+            text,
+        )
+        text = re.sub(
+            r"(?im)^#\s*(Next Steps|Practical Next Step|Recommended Next Step)\s*$",
+            "## Practical Next Step",
+            text,
+        )
+        text = re.sub(
+            r"(?im)^##\s*(Direct Answer|Answer)\s*$",
+            "## Short Answer",
+            text,
+        )
+        text = re.sub(
+            r"(?im)^##\s*(Evidence|Why This Is True)\s*$",
+            "## Evidence From Code",
+            text,
+        )
+        text = re.sub(
+            r"(?im)^##\s*(Next Steps|Recommended Next Step)\s*$",
+            "## Practical Next Step",
+            text,
+        )
+
+        has_direct = "## short answer" in text.lower()
+        has_evidence = "## evidence from code" in text.lower()
+        has_next_steps = "## practical next step" in text.lower()
+
+        if has_direct and has_evidence and has_next_steps:
+            return text
+
+        direct = text or "I couldn't ground this confidently in the current context."
+        evidence_lines = []
+        for idx, cit in enumerate(citations[: self.MAX_CITATIONS], start=1):
+            location = f"`{cit['file_path']}:{cit['line_range']}`"
+            reason = cit.get("why", "").strip() or "Relevant repository evidence."
+            evidence_lines.append(f"- [S{idx}] {location} - {reason}")
+
+        if not evidence_lines:
+            evidence_lines = ["- No validated citations were available."]
+
+        next_steps = ["- Ask a narrower question with a file path, symbol, or module name."]
+        if assumptions:
+            next_steps.append("- Review the listed assumptions before applying this answer.")
+
+        return (
+            "## Short Answer\n"
+            f"{direct}\n\n"
+            "## Evidence From Code\n"
+            f"{chr(10).join(evidence_lines)}\n\n"
+            "## Practical Next Step\n"
+            f"{chr(10).join(next_steps)}"
+        )
+
     async def answer(self, query: str, chunks: List[Chunk]) -> ChatResponse:
         """
-        Generate an answer grounded in the provided chunks.
+        Generate an answer grounded in retrieved chunks.
         """
-        context_str = ""
         if not chunks:
-            context_str = "No relevant code chunks found in the repository. The user might be asking a general question."
-        else:
-            # Build context string with truncation
-            context_parts = []
-            for i, chunk in enumerate(chunks):
-                content = chunk.content
-                if len(content) > self.MAX_CONTENT_LENGTH:
-                    content = content[:self.MAX_CONTENT_LENGTH] + "... [truncated]"
-                
-                context_parts.append(
-                    f"[Source {i+1}]\n"
-                    f"File: {chunk.file_path}\n"
-                    f"Lines: {chunk.line_range}\n"
-                    f"Content:\n{content}\n"
-                )
-            context_str = "\n---\n".join(context_parts)
-        
+            return ChatResponse(
+                answer=(
+                    "## Short Answer\n"
+                    "I don't have enough repository evidence yet to answer this safely.\n\n"
+                    "## Evidence From Code\n"
+                    "- No repository chunks matched the question.\n\n"
+                    "## Practical Next Step\n"
+                    "- Re-index the repository.\n"
+                    "- Ask with a file path, module, or symbol name so I can anchor to exact code."
+                ),
+                citations=[],
+                confidence=AnswerConfidence.LOW,
+                assumptions=["No relevant repository context retrieved."],
+            )
+
+        context_parts = []
+        for i, chunk in enumerate(chunks[: self.MAX_CITATIONS], start=1):
+            source_id = f"S{i}"
+            content = chunk.content
+            if len(content) > self.MAX_CONTENT_LENGTH:
+                content = content[: self.MAX_CONTENT_LENGTH] + "... [truncated]"
+
+            context_parts.append(
+                f"[{source_id}]\n"
+                f"File: {chunk.file_path}\n"
+                f"Lines: {chunk.line_range}\n"
+                f"Content:\n{content}\n"
+            )
+
+        context_str = "\n---\n".join(context_parts)
         messages = [
             {"role": "system", "content": self.SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"}
+            {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"},
         ]
-        
+
         try:
             response_text = await llm.chat_completion(messages, json_mode=True)
-            
-            # Parse the response
-            data = self._parse_response(response_text)
-            
-            if data:
-                # Clean up the answer field
-                data["answer"] = _clean_answer_text(data.get("answer", ""))
-                
-                # Ensure confidence is valid - preserve LLM's confidence
-                confidence = data.get("confidence", "medium")
-                if isinstance(confidence, str):
-                    confidence = confidence.lower()
-                    if confidence not in ["high", "medium", "low"]:
-                        confidence = "medium"
-                data["confidence"] = confidence
-                
-                # If LLM returned empty citations but we have chunks, inject them
-                if (not data.get("citations") or len(data.get("citations", [])) == 0) and chunks:
-                    data["citations"] = self._generate_citations_from_chunks(chunks)
-                    logger.info("injected_fallback_citations", count=len(data["citations"]))
-                
-                return ChatResponse(**data)
-            
-            # Fallback: Could not parse response
-            fallback_answer = _clean_answer_text(response_text)
-            fallback_citations = self._generate_citations_from_chunks(chunks) if chunks else []
-            
-            return ChatResponse(
-                answer=fallback_answer if fallback_answer else "I couldn't generate a proper response.",
-                citations=fallback_citations,
-                confidence=AnswerConfidence.MEDIUM,  # Not low - just couldn't parse
-                assumptions=["Response format was not valid JSON"]
+            data = self._parse_response(response_text) or {}
+
+            raw_answer = _clean_answer_text(data.get("answer", "") or "")
+            raw_assumptions = data.get("assumptions", [])
+            assumptions = [
+                str(item).strip()
+                for item in (raw_assumptions if isinstance(raw_assumptions, list) else [])
+                if str(item).strip()
+            ]
+
+            validated_citations = self._validate_citations(data.get("citations", []), chunks)
+            if not validated_citations:
+                validated_citations = self._generate_citations_from_chunks(chunks)
+                logger.info("injected_fallback_citations", count=len(validated_citations))
+
+            structured_answer = self._ensure_structured_answer(
+                raw_answer, validated_citations, assumptions
             )
-                
+            confidence = self._estimate_confidence(
+                structured_answer,
+                chunks,
+                validated_citations,
+                assumptions,
+                str(data.get("confidence", "")).lower(),
+            )
+            final_assumptions = assumptions if confidence == AnswerConfidence.LOW else []
+
+            return ChatResponse(
+                answer=structured_answer,
+                citations=validated_citations,
+                confidence=confidence,
+                assumptions=final_assumptions,
+            )
+
         except Exception as e:
             logger.error("answer_generation_failed", error=str(e))
             error_citations = self._generate_citations_from_chunks(chunks) if chunks else []
             return ChatResponse(
-                answer=f"Sorry, I encountered an error while generating the answer.\n\nError details: {str(e)}",
+                answer=(
+                    "## Short Answer\n"
+                    "I hit an internal error while generating your grounded answer.\n\n"
+                    "## Evidence From Code\n"
+                    "- The response pipeline failed before final formatting.\n\n"
+                    "## Practical Next Step\n"
+                    "- Retry the question.\n"
+                    "- If this repeats, re-index the repository and check backend logs."
+                ),
                 citations=error_citations,
                 confidence=AnswerConfidence.LOW,
-                assumptions=[str(e)]
+                assumptions=[str(e)],
             )
 
 

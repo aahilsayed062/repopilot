@@ -56,6 +56,10 @@ class RepoInfo(BaseModel):
     stats: Optional[RepoStats] = None
     indexed: bool = False
     chunk_count: int = 0
+    is_indexing: bool = False
+    index_progress_pct: float = 0.0
+    index_processed_chunks: int = 0
+    index_total_chunks: int = 0
 
 
 class RepoLoadResponse(BaseModel):
@@ -76,6 +80,10 @@ class RepoStatusResponse(BaseModel):
     indexed: bool
     stats: Optional[RepoStats] = None
     chunk_count: int = 0
+    is_indexing: bool = False
+    index_progress_pct: float = 0.0
+    index_processed_chunks: int = 0
+    index_total_chunks: int = 0
     files: Optional[list[dict]] = None
 
 

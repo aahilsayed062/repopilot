@@ -34,11 +34,12 @@ echo.
 echo ========================================
 echo Starting Backend Server...
 echo ========================================
-echo Backend URL: http://localhost:8001
+echo Backend URL: http://localhost:8000
+echo Running in stable mode (auto-reload disabled to prevent disconnects during indexing)
 echo Press Ctrl+C to stop the server
 echo ========================================
 echo.
 
-venv\Scripts\python.exe -m uvicorn app.main:app --port 8001 --reload
+venv\Scripts\python.exe run.py
 
 pause

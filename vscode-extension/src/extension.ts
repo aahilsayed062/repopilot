@@ -17,6 +17,7 @@ import { RepoPilotCodeLensProvider } from './codeLens';
 let chatPanelProvider: ChatPanelProvider;
 let statusBar: StatusBarManager;
 let healthCheckInterval: NodeJS.Timeout | undefined;
+let isAutoIndexing = false;
 
 /**
  * Extension activation
@@ -32,7 +33,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(statusBar);
 
     // Create chat panel provider
-    chatPanelProvider = new ChatPanelProvider(context);
+    chatPanelProvider = new ChatPanelProvider(context, statusBar);
 
     // Register webview provider
     context.subscriptions.push(
@@ -59,9 +60,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         )
     );
 
-    // Check backend health and auto-index
-    await initializeExtension();
-
+    // Check backend health and auto-index (non-blocking so extension host starts fast)
+    initializeExtension().catch(err => {
+        console.error('RepoPilot initialization error:', err);
+    });
 
     // Start health check interval (every 30s)
     startHealthCheckInterval();
@@ -78,15 +80,22 @@ function startHealthCheckInterval() {
     }
 
     healthCheckInterval = setInterval(async () => {
+        // Don't overwrite status while indexing is in progress
+        const panelStatus = chatPanelProvider.getCurrentStatus();
+        if (isAutoIndexing || panelStatus === 'loading' || panelStatus === 'indexing') {
+            return;
+        }
+
         const isHealthy = await api.isBackendHealthy();
         if (isHealthy) {
-            // If it was offline, this will recover it
             const storedState = getStoredState();
             if (storedState.repoId) {
-                // We don't want to spam status updates, so only update if needed or blindly
-                // But statusBar.update handles duplicate states gracefully-ish
-                // better to check current state from chatPanelProvider access if possible
-                // For now, just a quiet check. If it comes back online, we could trigger validatin.
+                chatPanelProvider.setRepoInfo(storedState.repoId, storedState.repoName || 'Ready');
+                chatPanelProvider.updateStatus('ready', storedState.repoId, storedState.repoName || 'Ready');
+                statusBar.update('ready', storedState.repoName || 'Ready');
+            } else {
+                chatPanelProvider.updateStatus('not_indexed');
+                statusBar.update('not_indexed');
             }
         } else {
             chatPanelProvider.updateStatus('not_connected');
@@ -103,10 +112,14 @@ async function initializeExtension(): Promise<void> {
     const isHealthy = await api.isBackendHealthy();
 
     if (!isHealthy) {
+        const backendUrl = vscode.workspace
+            .getConfiguration('repopilot')
+            .get<string>('backendUrl', 'http://localhost:8000');
+
         chatPanelProvider.updateStatus('not_connected');
         statusBar.update('not_connected');
         vscode.window.showWarningMessage(
-            'RepoPilot backend is not running. Start it with: python backend/run.py',
+            `RepoPilot backend is not reachable at ${backendUrl}. Start it with: python backend/run.py`,
             'Dismiss'
         );
         return;
@@ -157,6 +170,7 @@ async function initializeExtension(): Promise<void> {
  * Auto-index the current workspace
  */
 async function autoIndexWorkspace(workspacePath: string): Promise<void> {
+    isAutoIndexing = true;
     chatPanelProvider.updateStatus('loading');
     statusBar.update('loading');
 
@@ -180,17 +194,24 @@ async function autoIndexWorkspace(workspacePath: string): Promise<void> {
             // Fallback to local path
         }
 
-        // Load and index
-        chatPanelProvider.updateStatus('indexing');
-
-        const result = await api.loadAndIndexRepo(repoUrl, (status) => {
-            console.log(`Indexing progress: ${status}`);
+        // Load and index -- update status bar with progress
+        const result = await api.loadAndIndexRepo(repoUrl, (progressMsg) => {
+            console.log(`Indexing progress: ${progressMsg}`);
+            if (progressMsg.startsWith('Indexing')) {
+                chatPanelProvider.updateStatus('indexing');
+                statusBar.update('indexing');
+            } else if (progressMsg.startsWith('Loading')) {
+                chatPanelProvider.updateStatus('loading');
+                statusBar.update('loading');
+            }
         });
 
         // Save state
         await saveRepoInfo(result.repoId, result.repoName, workspacePath);
         chatPanelProvider.setRepoInfo(result.repoId, result.repoName);
         chatPanelProvider.updateStatus('ready', result.repoId, result.repoName);
+        statusBar.update('ready', result.repoName);
+        isAutoIndexing = false;
 
         vscode.window.showInformationMessage(
             `RepoPilot: Indexed ${result.repoName} successfully!`
@@ -199,6 +220,8 @@ async function autoIndexWorkspace(workspacePath: string): Promise<void> {
         const message = error instanceof Error ? error.message : 'Auto-indexing failed';
         console.error('Auto-indexing failed:', message);
         chatPanelProvider.updateStatus('error');
+        statusBar.update('error');
+        isAutoIndexing = false;
 
         vscode.window.showWarningMessage(
             `RepoPilot auto-indexing failed: ${message}. Click Index in the chat panel to retry.`

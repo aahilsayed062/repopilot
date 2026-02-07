@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 
@@ -70,6 +70,19 @@ interface RepoFile {
   file_path: string;
 }
 
+interface RepoStatusPayload {
+  repo_id: string;
+  repo_name: string;
+  exists: boolean;
+  indexed: boolean;
+  chunk_count: number;
+  files?: RepoFile[];
+  is_indexing?: boolean;
+  index_progress_pct?: number;
+  index_processed_chunks?: number;
+  index_total_chunks?: number;
+}
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
@@ -97,6 +110,10 @@ const formatBytes = (bytes: number): string => {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
+
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const apiUrl = (path: string): string => (API_BASE ? `${API_BASE}${path}` : `/api${path}`);
+const LOAD_TIMEOUT_MS = 20 * 60 * 1000;
 
 // ============================================
 // SUB-COMPONENTS
@@ -131,6 +148,86 @@ const TypingIndicator = () => (
     </div>
   </motion.div>
 );
+
+const renderInlineFormatting = (text: string): ReactNode[] => {
+  const segments = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return segments.map((segment, idx) => {
+    if (segment.startsWith("**") && segment.endsWith("**") && segment.length > 4) {
+      return <strong key={idx}>{segment.slice(2, -2)}</strong>;
+    }
+    if (segment.startsWith("`") && segment.endsWith("`") && segment.length > 2) {
+      return <code key={idx}>{segment.slice(1, -1)}</code>;
+    }
+    return <span key={idx}>{segment}</span>;
+  });
+};
+
+interface MessageContentProps {
+  content: string;
+}
+
+const MessageContent = ({ content }: MessageContentProps) => {
+  const lines = content.split('\n');
+  const nodes: ReactNode[] = [];
+  let bulletBuffer: string[] = [];
+  let key = 0;
+
+  const flushBullets = () => {
+    if (bulletBuffer.length === 0) return;
+    nodes.push(
+      <ul key={`ul-${key++}`} className="assistant-list">
+        {bulletBuffer.map((item, idx) => (
+          <li key={`li-${key}-${idx}`}>{renderInlineFormatting(item)}</li>
+        ))}
+      </ul>
+    );
+    bulletBuffer = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushBullets();
+      nodes.push(<div key={`sp-${key++}`} className="assistant-spacer" />);
+      continue;
+    }
+
+    if (trimmed.startsWith("- ")) {
+      bulletBuffer.push(trimmed.slice(2));
+      continue;
+    }
+
+    flushBullets();
+
+    if (trimmed.startsWith("## ")) {
+      nodes.push(
+        <h3 key={`h2-${key++}`} className="assistant-section-title">
+          {renderInlineFormatting(trimmed.slice(3))}
+        </h3>
+      );
+      continue;
+    }
+
+    if (trimmed.startsWith("### ")) {
+      nodes.push(
+        <h4 key={`h3-${key++}`} className="assistant-subsection-title">
+          {renderInlineFormatting(trimmed.slice(4))}
+        </h4>
+      );
+      continue;
+    }
+
+    nodes.push(
+      <p key={`p-${key++}`} className="assistant-paragraph">
+        {renderInlineFormatting(trimmed)}
+      </p>
+    );
+  }
+
+  flushBullets();
+  return <div className="message-content message-content--rich">{nodes}</div>;
+};
 
 interface CodeBlockProps {
   code: string;
@@ -200,7 +297,7 @@ const Citations = ({ citations }: CitationsProps) => (
               {cit.file_path}{cit.line_range ? `:${cit.line_range}` : ''}
             </div>
             {cit.snippet && (
-              <div className="citation-snippet">"{cit.snippet}"</div>
+              <div className="citation-snippet">&quot;{cit.snippet}&quot;</div>
             )}
           </div>
         </motion.div>
@@ -255,6 +352,8 @@ export default function Home() {
   const [stats, setStats] = useState<RepoStats | null>(null);
   const [files, setFiles] = useState<RepoFile[]>([]);
   const [chunkCount, setChunkCount] = useState<number>(0);
+  const [progressPct, setProgressPct] = useState<number | null>(null);
+  const [progressLabel, setProgressLabel] = useState<string>("");
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -267,6 +366,8 @@ export default function Home() {
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const loadRequestInFlightRef = useRef(false);
+  const indexRequestInFlightRef = useRef(false);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -277,7 +378,7 @@ export default function Home() {
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const res = await fetch("/api/health");
+        const res = await fetch(apiUrl("/health"));
         const d = await res.json();
         if (d.mock_mode) {
           setStatus("Mock Mode Active");
@@ -297,19 +398,54 @@ export default function Home() {
   // Load Repo
   const loadRepo = async () => {
     if (!repoUrl.trim()) return;
-    if (isLoading || isIndexing) return;
+    if (isLoading || isIndexing || loadRequestInFlightRef.current) return;
+    loadRequestInFlightRef.current = true;
 
     setIsLoading(true);
-    setStatus("Loading...");
+    setStatus("Loading repository... 1%");
     setStatusType('default');
     setLastError(null);
+    setProgressLabel("Loading repository");
+    setProgressPct(1);
+
+    let loadingPct = 1;
+    const loadingStartTs = Date.now();
+    const loadingTicker = setInterval(() => {
+      const elapsedSec = (Date.now() - loadingStartTs) / 1000;
+      let targetPct = 1;
+
+      if (elapsedSec < 8) {
+        targetPct = 1 + elapsedSec * 6;
+      } else if (elapsedSec < 20) {
+        targetPct = 49 + (elapsedSec - 8) * 2.2;
+      } else if (elapsedSec < 45) {
+        targetPct = 75 + (elapsedSec - 20) * 0.8;
+      } else {
+        targetPct = 95 + Math.min(3, (elapsedSec - 45) * 0.08);
+      }
+
+      loadingPct = Math.max(loadingPct, Math.min(98, targetPct));
+      const rounded = Math.floor(loadingPct);
+      const label = rounded >= 97 ? "Finalizing clone" : "Loading repository";
+      setProgressLabel(label);
+      setProgressPct(rounded);
+      setStatus(`${label}... ${rounded}%`);
+    }, 1400);
 
     try {
-      const res = await fetch("/api/repo/load", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_url: repoUrl }),
-      });
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch(apiUrl("/repo/load"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo_url: repoUrl }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.detail || "Failed to load repo");
@@ -318,49 +454,115 @@ export default function Home() {
       setRepoName(data.repo_name);
       setCommitHash(data.commit_hash || null);
       setStats(data.stats);
-      setStatus(`${data.repo_name}`);
+      setStatus(`${data.repo_name} loaded`);
       setStatusType('success');
+      setProgressLabel("Repository loaded");
+      setProgressPct(100);
+      clearInterval(loadingTicker);
+      setIsLoading(false);
 
       await indexRepo(data.repo_id, false);
 
     } catch (e: unknown) {
       const error = e as Error;
-      setStatus(error.message);
+      const message = error.name === "AbortError"
+        ? "Loading repository timed out. Please retry."
+        : error.message;
+      setStatus(message);
       setStatusType('error');
-      setLastError({ type: 'index', message: error.message, retry: loadRepo });
+      setLastError({ type: 'index', message, retry: loadRepo });
+      setProgressPct(null);
     } finally {
+      clearInterval(loadingTicker);
       setIsLoading(false);
+      loadRequestInFlightRef.current = false;
     }
   };
 
   // Index Repo
   const indexRepo = async (id: string, force: boolean = false) => {
-    if (isIndexing) return;
+    if (isIndexing || indexRequestInFlightRef.current) return;
+    indexRequestInFlightRef.current = true;
 
     setIsIndexing(true);
-    setStatus("Indexing...");
+    setStatus("Indexing... 1%");
     setStatusType('default');
     setLastError(null);
+    setProgressLabel("Indexing repository");
+    setProgressPct(1);
+
+    let indexingSucceeded = false;
 
     try {
-      const res = await fetch("/api/repo/index", {
+      let stopPolling = false;
+      let maxReportedPct = 1;
+      const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      const pollProgress = async () => {
+        while (!stopPolling) {
+          try {
+            const statusRes = await fetch(apiUrl(`/repo/status?repo_id=${id}&include_files=false`));
+            if (statusRes.ok) {
+              const statusData: RepoStatusPayload = await statusRes.json();
+              const backendPct = Math.max(0, Math.min(99, Math.floor(statusData.index_progress_pct ?? 0)));
+
+              if (statusData.is_indexing) {
+                if (backendPct > 0) {
+                  maxReportedPct = Math.max(maxReportedPct, backendPct);
+                } else {
+                  maxReportedPct = Math.min(95, maxReportedPct + 1);
+                }
+
+                const displayedPct = Math.max(1, maxReportedPct);
+                setProgressPct((prev) => Math.max(prev ?? 0, displayedPct));
+                const done = statusData.index_processed_chunks ?? 0;
+                const total = statusData.index_total_chunks ?? 0;
+                const isFinalizing = displayedPct >= 99;
+                const label = isFinalizing ? "Finalizing index" : "Indexing";
+                setProgressLabel(isFinalizing ? "Finalizing index" : "Indexing repository");
+                if (total > 0) {
+                  setStatus(`${label}... ${displayedPct}% (${Math.min(done, total)}/${total})`);
+                } else {
+                  setStatus(`${label}... ${displayedPct}%`);
+                }
+              } else {
+                maxReportedPct = Math.max(maxReportedPct, 99);
+                setProgressPct((prev) => Math.max(prev ?? 0, maxReportedPct));
+                setProgressLabel("Finalizing index");
+                setStatus(`Finalizing index... ${maxReportedPct}%`);
+              }
+            }
+          } catch {
+            // Ignore progress polling errors while indexing request is active.
+          }
+          await sleep(1200);
+        }
+      };
+
+      const pollPromise = pollProgress();
+      const res = await fetch(apiUrl("/repo/index"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo_id: id, force }),
       });
+      stopPolling = true;
+      await pollPromise;
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.detail || "Failed to index");
 
       setIsIndexed(true);
       setChunkCount(data.chunk_count || 0);
+      setProgressPct(100);
+      setProgressLabel("Indexing complete");
       setStatus("Ready");
       setStatusType('success');
+      indexingSucceeded = true;
 
-      const statusRes = await fetch(`/api/repo/status?repo_id=${id}&include_files=true`);
+      const statusRes = await fetch(apiUrl(`/repo/status?repo_id=${id}&include_files=true`));
       if (statusRes.ok) {
-        const statusData = await statusRes.json();
+        const statusData: RepoStatusPayload = await statusRes.json();
         setFiles(statusData.files || []);
+        setChunkCount(statusData.chunk_count || data.chunk_count || 0);
       }
 
     } catch (e: unknown) {
@@ -368,8 +570,17 @@ export default function Home() {
       setStatus(error.message);
       setStatusType('error');
       setLastError({ type: 'index', message: error.message, retry: () => indexRepo(id, force) });
+      setProgressPct(null);
+      setProgressLabel("");
     } finally {
       setIsIndexing(false);
+      indexRequestInFlightRef.current = false;
+      if (indexingSucceeded) {
+        setTimeout(() => {
+          setProgressPct(null);
+          setProgressLabel("");
+        }, 1200);
+      }
     }
   };
 
@@ -441,7 +652,7 @@ export default function Home() {
     try {
       if (currentInput.startsWith("/generate ")) {
         const request = currentInput.replace("/generate ", "");
-        const res = await fetch("/api/chat/generate", {
+        const res = await fetch(apiUrl("/chat/generate"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ repo_id: repoId, request: request }),
@@ -463,7 +674,7 @@ export default function Home() {
           }))
         }]);
       } else {
-        const res = await fetch("/api/chat/ask", {
+        const res = await fetch(apiUrl("/chat/ask"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ repo_id: repoId, question: userMsg.content }),
@@ -640,6 +851,21 @@ export default function Home() {
                     </>
                   )}
                 </button>
+              )}
+
+              {(isLoading || isIndexing || progressPct !== null) && (
+                <div className="operation-progress">
+                  <div className="operation-progress__header">
+                    <span>{progressLabel || (isLoading ? "Loading repository" : "Indexing repository")}</span>
+                    <span>{Math.max(0, Math.min(100, Math.round(progressPct ?? 0)))}%</span>
+                  </div>
+                  <div className="operation-progress__track">
+                    <div
+                      className="operation-progress__fill"
+                      style={{ width: `${Math.max(0, Math.min(100, Math.round(progressPct ?? 0)))}%` }}
+                    />
+                  </div>
+                </div>
               )}
 
             </div>
@@ -831,7 +1057,11 @@ export default function Home() {
                       </div>
                     )}
                     <div className="message-bubble">
-                      <div className="message-content">{msg.content}</div>
+                      {msg.role === 'assistant' ? (
+                        <MessageContent content={msg.content} />
+                      ) : (
+                        <div className="message-content">{msg.content}</div>
+                      )}
 
                       {/* Code in response */}
                       {msg.tests && (

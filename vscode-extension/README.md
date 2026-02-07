@@ -54,7 +54,7 @@
 
 ## ⚙️ Configuration
 
-*   `repopilot.backendUrl`: URL of your local backend (Default: `http://localhost:8001`).
+*   `repopilot.backendUrl`: URL of your local backend (Default: `http://localhost:8000`).
 *   `repopilot.autoIndexOnOpen`: Enable/disable auto-indexing (Default: `true`).
 
 ---
@@ -77,7 +77,7 @@
    cd ../backend
    python run.py
    ```
-   Backend should be running at `http://localhost:8001`
+   Backend should be running at `http://localhost:8000`
 
 2. **Node.js** installed (for development)
 
@@ -128,7 +128,7 @@
 Configure in VS Code Settings (File → Preferences → Settings → RepoPilot):
 
 - **Backend URL** (`repopilot.backendUrl`)
-  - Default: `http://localhost:8001`
+  - Default: `http://localhost:8000`
   - Change this if your backend runs on a different URL/port
 
 - **Auto Index on Open** (`repopilot.autoIndexOnOpen`)

@@ -67,12 +67,12 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --port 8001 --reload
+python run.py
 ```
 
 You should see:
 ```
-INFO: Uvicorn running on http://127.0.0.1:8001
+INFO: Uvicorn running on http://127.0.0.1:8000
 embedding_provider=Gemini chat_provider=Groq
 ```
 
@@ -155,7 +155,7 @@ cd backend
 python -m venv venv
 venv\Scripts\activate    # Windows
 pip install -r requirements.txt
-uvicorn app.main:app --port 8001 --reload
+python run.py
 ```
 
 ### Extension
@@ -184,7 +184,7 @@ npm run compile
 
 | Issue | Solution |
 |-------|----------|
-| "Cannot connect to backend" | Make sure backend is running on port 8001 |
+| "Cannot connect to backend" | Make sure backend is running on port 8000 |
 | "No API key" | Check your `.env` file has valid keys |
 | "Repository too large" | Max 50MB and 500 files by default |
 

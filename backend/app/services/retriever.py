@@ -2,6 +2,7 @@
 Retriever service - Semantic search over indexed chunks.
 """
 
+import re
 from typing import List
 
 from app.config import settings
@@ -21,6 +22,10 @@ class Retriever:
     def __init__(self, default_k: int = 4):
         # Reduced from 8 to 4 to stay within Groq's 12k TPM limit
         self.default_k = default_k
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        return set(re.findall(r"[a-zA-Z0-9_]{2,}", (text or "").lower()))
     
     async def retrieve(self, repo_id: str, query: str, k: int = None) -> List[Chunk]:
         """
@@ -43,9 +48,10 @@ class Retriever:
             return []
             
         # Search
+        search_k = max(k * 5, 20)
         results = collection.query(
             query_embeddings=query_embeddings,
-            n_results=k,
+            n_results=search_k,
             include=["documents", "metadatas", "distances"]
         )
         
@@ -59,7 +65,9 @@ class Retriever:
         ids = results["ids"][0]
         documents = results["documents"][0]
         metadatas = results["metadatas"][0]
-        # distances = results["distances"][0] if "distances" in results else []
+        distances = results["distances"][0] if "distances" in results else []
+        query_tokens = self._tokenize(query)
+        scored = []
         
         for i, chunk_id in enumerate(ids):
             meta = metadatas[i]
@@ -79,8 +87,25 @@ class Retriever:
                 ),
                 content=content
             )
-            chunks.append(chunk)
+            # Hybrid rerank: lexical overlap + vector distance
+            lexical = 0.0
+            if query_tokens:
+                content_tokens = self._tokenize(content) | self._tokenize(meta["file_path"])
+                overlap = len(query_tokens & content_tokens)
+                lexical = overlap / max(1, len(query_tokens))
+
+            semantic = 0.0
+            if i < len(distances):
+                try:
+                    semantic = 1.0 / (1.0 + float(distances[i]))
+                except Exception:
+                    semantic = 0.0
+
+            total_score = (0.7 * lexical) + (0.3 * semantic)
+            scored.append((total_score, chunk))
             
+        scored.sort(key=lambda item: item[0], reverse=True)
+        chunks = [chunk for _, chunk in scored[:k]]
         logger.info("retrieved_chunks", count=len(chunks))
         return chunks
 

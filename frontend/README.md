@@ -22,7 +22,7 @@ Open [http://localhost:3000](http://localhost:3000) to start chatting.
 
 ## 🔧 Configuration
 
-The frontend connects to the backend via `NEXT_PUBLIC_API_URL` (or proxies `/api` to `localhost:8001` in dev).
+The frontend connects to the backend via `NEXT_PUBLIC_API_URL` (or proxies `/api` to `localhost:8000` in dev).
 
 ---
 Part of the [RepoPilot](https://github.com/yourusername/repopilot) monorepo.

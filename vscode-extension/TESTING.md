@@ -2,7 +2,7 @@
 
 ## ✅ Pre-Test Setup Checklist
 
-- [x] Backend running at http://localhost:8001
+- [x] Backend running at http://localhost:8000
 - [ ] VS Code installed (version 1.85.0 or higher)
 - [ ] Extension compiled (`npm run compile` in vscode-extension folder)
 
@@ -152,7 +152,7 @@
 
 **Expected:** Error because backend not at new URL
 
-**Cleanup:** Change back to `http://localhost:8001`
+**Cleanup:** Change back to `http://localhost:8000`
 
 ## 📊 Test Results Template
 
