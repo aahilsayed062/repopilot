@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import json
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -100,9 +101,57 @@ class RepoManager:
         ".DS_Store", "Thumbs.db",
     }
     
+    # Filename for persisting repo registry
+    REGISTRY_FILE = "repo_registry.json"
+    
     def __init__(self):
         self._repos: dict[str, RepoInfo] = {}
         settings.data_dir.mkdir(parents=True, exist_ok=True)
+        self._load_registry()  # Load persisted repos on startup
+    
+    def _get_registry_path(self) -> Path:
+        """Get path to the registry JSON file."""
+        return settings.data_dir / self.REGISTRY_FILE
+    
+    def _load_registry(self):
+        """Load repo registry from disk on startup."""
+        path = self._get_registry_path()
+        if not path.exists():
+            logger.info("no_registry_found", path=str(path))
+            return
+        
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for repo_id, info in data.items():
+                # Validate that the local path still exists
+                local_path = info.get("local_path")
+                if local_path and Path(local_path).exists():
+                    # Convert stats dict back to RepoStats if present
+                    if "stats" in info and isinstance(info["stats"], dict):
+                        info["stats"] = RepoStats(**info["stats"])
+                    self._repos[repo_id] = RepoInfo(**info)
+                    logger.debug("recovered_repo", repo_id=repo_id)
+                else:
+                    logger.warning("repo_path_missing", repo_id=repo_id, path=local_path)
+            
+            logger.info("registry_loaded", count=len(self._repos))
+        except Exception as e:
+            logger.warning("registry_load_failed", error=str(e))
+    
+    def _save_registry(self):
+        """Persist repo registry to disk."""
+        path = self._get_registry_path()
+        try:
+            data = {}
+            for repo_id, info in self._repos.items():
+                # Convert to dict, handling nested models
+                info_dict = info.model_dump()
+                data[repo_id] = info_dict
+            
+            path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            logger.debug("registry_saved", count=len(data))
+        except Exception as e:
+            logger.error("registry_save_failed", error=str(e))
     
     def _parse_github_url(self, url: str) -> tuple[str, str]:
         """Extract owner and repo name from GitHub URL."""
@@ -207,6 +256,7 @@ class RepoManager:
         )
         
         self._repos[repo_id] = repo_info
+        self._save_registry()  # Persist to disk
         logger.info("loaded_local_repo", repo_id=repo_id, repo_name=repo_name)
         
         return repo_info
@@ -353,6 +403,7 @@ class RepoManager:
         )
         
         self._repos[repo_id] = repo_info
+        self._save_registry()  # Persist to disk
         
         logger.info(
             "cloned_repo",
@@ -411,6 +462,14 @@ class RepoManager:
     def get_repo(self, repo_id: str) -> Optional[RepoInfo]:
         """Get repository info by ID."""
         return self._repos.get(repo_id)
+    
+    def update_repo(self, repo_id: str, **updates):
+        """Update repo info and persist."""
+        if repo_id in self._repos:
+            for key, value in updates.items():
+                if hasattr(self._repos[repo_id], key):
+                    setattr(self._repos[repo_id], key, value)
+            self._save_registry()
     
     def get_repo_path(self, repo_id: str) -> Optional[Path]:
         """Get local path for a repository."""

@@ -113,9 +113,10 @@ class Indexer:
                 count=len(batch)
             )
         
-        # 6. Update repo state
+        # 6. Update repo state and persist to registry
         repo_info.indexed = True
         repo_info.chunk_count = total_chunks
+        repo_manager.update_repo(repo_id, indexed=True, chunk_count=total_chunks)
         
         logger.info(
             "indexing_complete", 
