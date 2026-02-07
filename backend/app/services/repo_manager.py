@@ -461,8 +461,6 @@ class RepoManager:
         # Build clone command
         clone_cmd = [
             "git",
-            "-c",
-            "http.sslBackend=openssl",
             "clone",
             "--depth",
             "1",
