@@ -17,20 +17,24 @@ logger = get_logger(__name__)
 class CodeGenerationRequest(BaseModel):
     repo_id: str
     request: str
+    chat_history: List[dict] = Field(default_factory=list)
 
 
 class FileDiff(BaseModel):
     file_path: str
+    where_to_paste: Optional[str] = None
+    code: Optional[str] = None
     content: Optional[str] = None
     diff: str
 
 
 class GenerationResponse(BaseModel):
     plan: str
-    patterns_followed: List[str] = []
+    patterns_followed: List[str] = Field(default_factory=list)
     diffs: List[FileDiff]
     tests: str
     citations: List[str]
+    paste_instructions: List[str] = Field(default_factory=list)
 
 
 class Generator:
@@ -39,47 +43,115 @@ class Generator:
     """
     
     SYSTEM_PROMPT = """You are RepoPilot, a senior software engineer.
-    Your task is to allow the user to modify the codebase based on their request.
-    
-    You will be provided with:
-    1. The User Request
-    2. Relevant Code Context (Chunks from the repository)
-    
-    You must output a JSON response with the following structure:
+Your task is to produce implementation-ready code changes grounded in repository context.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "plan": "Markdown with sections: ## Direct Solution, ## Why This Approach, ## Paste Guide",
+  "patterns_followed": ["List specific repository patterns you followed"],
+  "changes": [
     {
-        "plan": "Detailed step-by-step implementation plan (markdown)",
-        "patterns_followed": ["List of specific patterns identified and followed (e.g., 'Using Repository Pattern', 'Error handling via middleware')"],
-        "changes": [
-            {
-                "file_path": "path/to/file.ext",
-                "diff": "Unified diff or search/replace block showing the changes"
-            }
-        ],
-        "test_file_content": "Full content of a new or updated test file to verify these changes"
+      "file_path": "relative/path/to/file.ext",
+      "where_to_paste": "Exact placement guidance (e.g., replace function X, insert after line containing Y)",
+      "code": "Copy-paste-ready final code snippet for that location",
+      "diff": "Unified diff showing the same change"
     }
+  ],
+  "paste_instructions": [
+    "1) path + exact anchor + what to replace/insert",
+    "2) ... for each file"
+  ],
+  "test_file_content": "Optional test code"
+}
+
+Rules:
+- Use ONLY provided repository context.
+- Keep code clean, correct, and directly usable.
+- If context is insufficient, explicitly say so in plan and keep changes empty.
+- For each change, provide exact placement instructions and copy-ready code.
+- Match repository naming, structure, style, and error-handling patterns.
+"""
+
+    COMPLEXITY_MARKERS = (
+        "architecture",
+        "end-to-end",
+        "refactor",
+        "migration",
+        "multiple files",
+        "across",
+        "pipeline",
+        "integration",
+        "security",
+        "performance",
+    )
+
+    def _is_complex_request(self, request: str) -> bool:
+        q = (request or "").lower()
+        if len(q) > 140:
+            return True
+        return any(marker in q for marker in self.COMPLEXITY_MARKERS)
+
+    def _format_recent_history(self, chat_history: List[dict], limit: int = 5) -> str:
+        if not chat_history:
+            return ""
+        lines: List[str] = []
+        for turn in chat_history[-limit:]:
+            if isinstance(turn, dict):
+                role_value = turn.get("role", "")
+                content_value = turn.get("content", "")
+            else:
+                role_value = getattr(turn, "role", "")
+                content_value = getattr(turn, "content", "")
+
+            role = str(role_value).strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = str(content_value).strip()
+            if not content:
+                continue
+            label = "User" if role == "user" else "Assistant"
+            lines.append(f"{label}: {content}")
+        return "\n".join(lines)
+
+    def _derive_paste_instructions(self, diffs: List[FileDiff]) -> List[str]:
+        instructions: List[str] = []
+        for i, diff in enumerate(diffs, start=1):
+            where = (diff.where_to_paste or "").strip()
+            if where:
+                instructions.append(f"{i}. `{diff.file_path}` -> {where}")
+            else:
+                instructions.append(
+                    f"{i}. `{diff.file_path}` -> apply the provided diff in this file."
+                )
+        return instructions
     
-    Rules:
-    - Base your changes ONLY on the provided context.
-    - Analyze the provided context for coding patterns (naming conventions, error handling, project structure) and explicitly state which patterns you are following in 'patterns_followed'.
-    - If you need to create a new file, specify it in 'changes' with the full content as the diff.
-    - Keep changes minimal and focused.
-    - Match the existing code style (indentation, naming).
-    - If you lack sufficient context to make the change safely, state that in the plan.
-    """
-    
-    async def generate(self, repo_id: str, request: str) -> GenerationResponse:
+    async def generate(
+        self,
+        repo_id: str,
+        request: str,
+        chat_history: Optional[List[dict]] = None,
+    ) -> GenerationResponse:
         logger.info("generating_code_start", repo_id=repo_id, request=request)
         
         # 1. Retrieve Context
-        # Reduced k from 10 to 4 to avoid rate limits
-        chunks = await retriever.retrieve(repo_id, request, k=4)
+        retrieval_k = 8 if self._is_complex_request(request) else 5
+        retrieval_query = request
+        recent_history = self._format_recent_history(chat_history or [], limit=5)
+        if recent_history:
+            retrieval_query = (
+                f"Current task: {request}\n"
+                f"Recent conversation context:\n{recent_history}"
+            )
+
+        chunks = await retriever.retrieve(repo_id, retrieval_query, k=retrieval_k)
         
         if not chunks:
             return GenerationResponse(
                 plan="I could not find any relevant code to modify. Please try a more specific request or ensure the repo is indexed.",
                 diffs=[],
                 tests="",
-                citations=[]
+                citations=[],
+                paste_instructions=[],
             )
             
         context_str = self._format_context(chunks)
@@ -87,7 +159,14 @@ class Generator:
         # 2. Call LLM
         messages = [
             {"role": "system", "content": self.SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context_str}\n\nUser Request: {request}"}
+            {
+                "role": "user",
+                "content": (
+                    f"Context:\n{context_str}\n\n"
+                    f"Recent conversation context:\n{recent_history or 'None'}\n\n"
+                    f"User Request: {request}"
+                ),
+            },
         ]
         
         try:
@@ -109,7 +188,12 @@ class Generator:
                 import re
                 plan_match = re.search(r'"plan":\s*"(.*?)(?<!\\)"', clean_text, re.DOTALL)
                 plan = plan_match.group(1) if plan_match else "Error parsing plan"
-                data = {"plan": plan, "changes": [], "test_file_content": ""}
+                data = {
+                    "plan": plan,
+                    "changes": [],
+                    "test_file_content": "",
+                    "paste_instructions": [],
+                }
             
             # Helper to extract patterns if missing
             if "patterns_followed" not in data or not data["patterns_followed"]:
@@ -130,8 +214,18 @@ class Generator:
             for change in data.get("changes", []):
                 diffs.append(FileDiff(
                     file_path=change.get("file_path", "unknown"),
+                    where_to_paste=change.get("where_to_paste"),
+                    code=change.get("code"),
                     diff=change.get("diff", "")
                 ))
+            paste_instructions = data.get("paste_instructions")
+            if not isinstance(paste_instructions, list):
+                paste_instructions = []
+            paste_instructions = [
+                str(item).strip() for item in paste_instructions if str(item).strip()
+            ]
+            if not paste_instructions and diffs:
+                paste_instructions = self._derive_paste_instructions(diffs)
             
             citations = list(set(c.metadata.file_path for c in chunks))
             
@@ -140,7 +234,8 @@ class Generator:
                 patterns_followed=data.get("patterns_followed", []),
                 diffs=diffs,
                 tests=data.get("test_file_content", ""),
-                citations=citations
+                citations=citations,
+                paste_instructions=paste_instructions,
             )
             
         except Exception as e:
@@ -150,7 +245,8 @@ class Generator:
                 patterns_followed=[],
                 diffs=[],
                 tests="",
-                citations=[]
+                citations=[],
+                paste_instructions=[],
             )
 
     def _format_context(self, chunks: List[Chunk]) -> str:

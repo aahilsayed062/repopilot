@@ -15,11 +15,19 @@ class Citation(BaseModel):
     why: Optional[str] = None
 
 
+class ChatTurn(BaseModel):
+    """Single conversation turn used for short-term context memory."""
+    role: str
+    content: str
+
+
 class ChatRequest(BaseModel):
     """Request to ask a question."""
     repo_id: str
     question: str
     decompose: bool = False
+    chat_history: List[ChatTurn] = Field(default_factory=list)
+    context_file_hints: List[str] = Field(default_factory=list)
 
 
 class AnswerConfidence(str, Enum):

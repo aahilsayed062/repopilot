@@ -64,7 +64,7 @@ Non-negotiable rules:
 5) Be direct and decisive when evidence is present.
 6) Return valid JSON with this exact schema:
 {
-  "answer": "Markdown with sections: ## Short Answer, ## Evidence From Code, ## Practical Next Step",
+  "answer": "A concrete markdown answer with sections ## Short Answer, ## Evidence From Code, ## Practical Next Step",
   "citations": [
     {"file_path": "path/to/file", "line_range": "L10-L20", "snippet": "short snippet", "why": "why this supports the answer"}
   ],
@@ -81,7 +81,22 @@ Style rules:
 - Do not sound robotic or legalistic.
 - Keep it technical but human.
 - In evidence bullets, mention source ids like [S1], [S2] where possible.
+- Never output placeholder/template text (for example: "Markdown with sections ...").
 """
+
+    TEMPLATE_LEAK_MARKERS = (
+        "markdown with sections",
+        "short answer, ## evidence from code, ## practical next step",
+        "return valid json with this exact schema",
+    )
+
+    GENERIC_NONANSWER_MARKERS = (
+        "review the code for any potential",
+        "ensure user input is properly validated",
+        "consider using more robust typing",
+        "could lead to potential issues",
+        "potential vulnerabilities",
+    )
 
     def _generate_citations_from_chunks(self, chunks: List[Chunk]) -> List[dict]:
         """Generate deterministic citations from retrieved chunks."""
@@ -212,6 +227,9 @@ Style rules:
             return AnswerConfidence.LOW
 
         lowered_answer = answer_text.lower()
+        if self._is_placeholder_answer(answer_text) or self._looks_generic_non_answer(answer_text):
+            return AnswerConfidence.LOW
+
         uncertainty_markers = [
             "insufficient evidence",
             "not enough context",
@@ -238,6 +256,10 @@ Style rules:
         elif llm_conf == "medium":
             score = max(score, 1)
 
+        # If the answer does not reference source ids, cap confidence at medium.
+        if "[s1]" not in lowered_answer and "[s2]" not in lowered_answer:
+            score = min(score, 1)
+
         if assumptions:
             score = max(0, score - 1)
 
@@ -247,11 +269,42 @@ Style rules:
             return AnswerConfidence.MEDIUM
         return AnswerConfidence.LOW
 
+    def _is_placeholder_answer(self, text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return True
+        return any(marker in lowered for marker in self.TEMPLATE_LEAK_MARKERS)
+
+    def _looks_generic_non_answer(self, text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return True
+        generic_hits = sum(1 for marker in self.GENERIC_NONANSWER_MARKERS if marker in lowered)
+        return generic_hits >= 2
+
+    async def _retry_for_concrete_answer(self, messages: List[dict], query: str) -> dict:
+        retry_messages = messages + [
+            {
+                "role": "user",
+                "content": (
+                    "Your previous output was template-like or too generic. "
+                    "Retry with a concrete, repository-grounded answer for this exact question: "
+                    f"{query}\n"
+                    "Return valid JSON only."
+                ),
+            }
+        ]
+        retry_text = await llm.chat_completion(retry_messages, json_mode=True)
+        return self._parse_response(retry_text) or {}
+
     def _ensure_structured_answer(
         self, answer_text: str, citations: List[dict], assumptions: List[str]
     ) -> str:
         """Guarantee a structured answer format even on fallback paths."""
         text = answer_text.strip()
+        if self._is_placeholder_answer(text):
+            text = ""
+
         text = re.sub(
             r"(?im)^#\s*(Direct Answer|Answer|Short Answer)\s*$",
             "## Short Answer",
@@ -313,7 +366,12 @@ Style rules:
             f"{chr(10).join(next_steps)}"
         )
 
-    async def answer(self, query: str, chunks: List[Chunk]) -> ChatResponse:
+    async def answer(
+        self,
+        query: str,
+        chunks: List[Chunk],
+        conversation_context: str = "",
+    ) -> ChatResponse:
         """
         Generate an answer grounded in retrieved chunks.
         """
@@ -348,9 +406,16 @@ Style rules:
             )
 
         context_str = "\n---\n".join(context_parts)
+        user_prompt = f"Context:\n{context_str}\n\nQuestion: {query}"
+        if conversation_context:
+            user_prompt = (
+                f"Context:\n{context_str}\n\n"
+                f"Recent conversation context:\n{conversation_context}\n\n"
+                f"Question: {query}"
+            )
         messages = [
             {"role": "system", "content": self.SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"},
+            {"role": "user", "content": user_prompt},
         ]
 
         try:
@@ -364,6 +429,25 @@ Style rules:
                 for item in (raw_assumptions if isinstance(raw_assumptions, list) else [])
                 if str(item).strip()
             ]
+
+            if self._is_placeholder_answer(raw_answer) or self._looks_generic_non_answer(raw_answer):
+                logger.warning("answer_quality_low_retrying")
+                try:
+                    retry_data = await self._retry_for_concrete_answer(messages, query)
+                    retry_answer = _clean_answer_text(retry_data.get("answer", "") or "")
+                    if retry_answer and not self._is_placeholder_answer(retry_answer):
+                        data = retry_data
+                        raw_answer = retry_answer
+                        retry_assumptions = retry_data.get("assumptions", [])
+                        assumptions = [
+                            str(item).strip()
+                            for item in (
+                                retry_assumptions if isinstance(retry_assumptions, list) else []
+                            )
+                            if str(item).strip()
+                        ]
+                except Exception as retry_error:
+                    logger.warning("answer_retry_failed", error=str(retry_error))
 
             validated_citations = self._validate_citations(data.get("citations", []), chunks)
             if not validated_citations:

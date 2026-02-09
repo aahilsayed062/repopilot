@@ -31,6 +31,19 @@ CASUAL_PATTERNS = [
 ]
 
 PATH_CANDIDATE_RE = re.compile(r"([A-Za-z0-9_\-./]+\.[A-Za-z0-9_]+)")
+HISTORY_TURN_LIMIT = 5
+SHORT_FOLLOW_UP_MAX_WORDS = 6
+SHORT_FOLLOW_UP_PATTERNS = (
+    "how to fix",
+    "how fix",
+    "fix this",
+    "fix it",
+    "what fix",
+    "why this",
+    "how so",
+    "and then",
+    "what next",
+)
 
 
 def _is_casual_message(question: str) -> bool:
@@ -89,6 +102,37 @@ def _extract_path_candidates(question: str) -> List[str]:
     ]
 
 
+def _is_short_follow_up(question: str) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+    if _extract_path_candidates(q):
+        return False
+    words = [w for w in re.split(r"\s+", q) if w]
+    if len(words) <= SHORT_FOLLOW_UP_MAX_WORDS:
+        return True
+    return any(pattern in q for pattern in SHORT_FOLLOW_UP_PATTERNS)
+
+
+def _format_recent_history(request: ChatRequest, limit: int = HISTORY_TURN_LIMIT) -> str:
+    """Build compact conversation context from the most recent turns."""
+    history = request.chat_history or []
+    if not history:
+        return ""
+
+    normalized: List[str] = []
+    for turn in history[-limit:]:
+        role = (turn.role or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = (turn.content or "").strip()
+        if not content:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        normalized.append(f"{label}: {content}")
+    return "\n".join(normalized)
+
+
 async def _retrieve_path_hint_chunks(repo_id: str, question: str) -> List[Chunk]:
     """
     If the question includes a file path-like token, pull chunks directly from that file.
@@ -134,6 +178,32 @@ async def _retrieve_path_hint_chunks(repo_id: str, question: str) -> List[Chunk]
     return direct_chunks
 
 
+async def _retrieve_context_hint_chunks(repo_id: str, file_hints: List[str]) -> List[Chunk]:
+    """
+    Pull direct chunks from context-provided file hints (typically prior assistant citations).
+    """
+    if not file_hints:
+        return []
+
+    normalized = []
+    seen = set()
+    for hint in file_hints:
+        path = str(hint or "").strip().replace("\\", "/")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        normalized.append(path)
+
+    direct_chunks: List[Chunk] = []
+    for file_path in normalized[:3]:
+        try:
+            content = await repo_manager.get_file_content(repo_id, file_path)
+            direct_chunks.extend(chunker.chunk_file(content, repo_id, file_path)[:2])
+        except Exception:
+            continue
+    return direct_chunks
+
+
 # PyTest Generation Models
 class PyTestRequest(BaseModel):
     """Request for PyTest generation."""
@@ -165,6 +235,9 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
 
         path_candidates = _extract_path_candidates(request.question)
         path_hint_chunks = await _retrieve_path_hint_chunks(request.repo_id, request.question)
+        context_hint_chunks = await _retrieve_context_hint_chunks(
+            request.repo_id, request.context_file_hints
+        )
         if path_candidates and not path_hint_chunks:
             return ChatResponse(
                 answer=(
@@ -182,6 +255,19 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
                 assumptions=["Referenced file path was not found in repository file list."],
             )
 
+        recent_context = _format_recent_history(request)
+        retrieval_seed = request.question.strip()
+        if recent_context:
+            retrieval_seed = (
+                f"Current question: {request.question.strip()}\n"
+                f"Recent conversation:\n{recent_context}"
+            )
+        if request.context_file_hints:
+            retrieval_seed += (
+                "\nPrior cited files that are likely relevant:\n"
+                + "\n".join(f"- {p}" for p in request.context_file_hints[:4])
+            )
+
         # 1. Decomposition (only when likely beneficial)
         sub_questions = None
         if request.decompose or planner.should_decompose(request.question):
@@ -192,21 +278,37 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
             except Exception:
                 sub_questions = None
 
-        search_queries = sub_questions if sub_questions else [request.question]
+        is_short_follow_up = _is_short_follow_up(request.question)
+        search_queries = sub_questions if sub_questions else [retrieval_seed]
         search_queries = [q.strip() for q in search_queries if q and q.strip()][:2]
         if not search_queries:
-            search_queries = [request.question]
+            search_queries = [retrieval_seed]
+        if is_short_follow_up and recent_context:
+            search_queries.insert(
+                0,
+                (
+                    f"Follow-up question: {request.question.strip()}\n"
+                    f"Resolve references using recent conversation:\n{recent_context}"
+                ),
+            )
+        if recent_context and sub_questions:
+            search_queries = [
+                f"{q}\nRelated recent conversation:\n{recent_context}"
+                for q in search_queries
+            ]
+        retrieval_k = 6 if is_short_follow_up else 4
 
         # 2. Retrieve in parallel
         retrievals = await asyncio.gather(
             *[
-                retriever.retrieve(repo_id=request.repo_id, query=q)
+                retriever.retrieve(repo_id=request.repo_id, query=q, k=retrieval_k)
                 for q in search_queries
             ],
             return_exceptions=True,
         )
         all_chunks = []
         all_chunks.extend(path_hint_chunks)
+        all_chunks.extend(context_hint_chunks)
         for result in retrievals:
             if isinstance(result, Exception):
                 continue
@@ -223,7 +325,8 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
         # 4. Answer with bounded context
         response = await answerer.answer(
             query=request.question,
-            chunks=unique_chunks[:6]
+            chunks=unique_chunks[:6],
+            conversation_context=recent_context,
         )
         
         return response
@@ -239,7 +342,11 @@ async def generate_code(request: CodeGenerationRequest) -> GenerationResponse:
     Generate code changes based on request.
     """
     try:
-        return await generator.generate(request.repo_id, request.request)
+        return await generator.generate(
+            request.repo_id,
+            request.request,
+            chat_history=request.chat_history,
+        )
     except Exception as e:
         logger.exception("generation_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

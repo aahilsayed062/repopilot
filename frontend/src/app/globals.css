@@ -1199,6 +1199,16 @@ body {
   border-radius: 3px;
 }
 
+.diff-placement-note {
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 /* Diff Highlighting */
 .diff-line {
   font-family: monospace;
@@ -1291,6 +1301,21 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
   font-style: italic;
+}
+
+.paste-guide-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.paste-guide-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 /* Confidence & Meta */
@@ -1454,7 +1479,7 @@ body {
   .sidebar {
     position: fixed;
     left: -320px;
-    width: 320px;
+    width: min(88vw, 320px);
     z-index: 150;
     transition: left 0.4s var(--ease-fluid);
     box-shadow: none;
@@ -1473,25 +1498,40 @@ body {
 
   .glass-header {
     padding: 0 16px;
+    gap: 10px;
   }
 
   .header-stats {
     display: none;
   }
 
+  .header-brand {
+    min-width: 0;
+    flex: 1;
+  }
+
   .header-status {
     font-size: 11px;
     padding: 6px 12px;
-    max-width: 160px;
+    max-width: 130px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .message-bubble {
-    max-width: 90%;
+    max-width: 95%;
     font-size: 14px;
     padding: 14px 16px;
+  }
+
+  .message-assistant {
+    gap: 8px;
+  }
+
+  .message-avatar {
+    width: 34px;
+    height: 34px;
   }
 
   .input-wrapper {
@@ -1508,9 +1548,66 @@ body {
     gap: 20px;
   }
 
+  .chat-header {
+    padding: 12px 14px;
+  }
+
+  .chat-header-title {
+    font-size: 1rem;
+  }
+
   .btn {
     padding: 10px 16px;
     font-size: 13px;
+  }
+}
+
+@media (max-width: 480px) {
+  .glass-header {
+    padding: 0 10px;
+  }
+
+  .header-status {
+    max-width: 110px;
+    padding: 6px 9px;
+    font-size: 10px;
+  }
+
+  .messages-container {
+    padding: 12px;
+    gap: 14px;
+  }
+
+  .message-avatar {
+    display: none;
+  }
+
+  .message-bubble {
+    max-width: 100%;
+    padding: 12px 13px;
+    font-size: 13px;
+  }
+
+  .input-container {
+    padding: 10px 10px 14px;
+  }
+
+  .chat-input {
+    font-size: 14px;
+  }
+
+  .send-button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .code-block-header {
+    padding: 8px 10px;
+  }
+
+  .code-block-content {
+    padding: 10px;
+    font-size: 12px;
   }
 }
 

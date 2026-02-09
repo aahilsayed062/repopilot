@@ -15,7 +15,6 @@ import {
   Check,
   Loader2,
   AlertCircle,
-  CheckCircle2,
   MessageSquare,
   Cpu,
   Info,
@@ -45,6 +44,8 @@ interface Citation {
 
 interface FileDiff {
   file_path: string;
+  where_to_paste?: string;
+  code?: string;
   content?: string;
   diff: string;
 }
@@ -57,6 +58,7 @@ interface Message {
   assumptions?: string[];
   plan?: string;
   diffs?: FileDiff[];
+  paste_instructions?: string[];
   tests?: string;
 }
 
@@ -109,6 +111,19 @@ const formatBytes = (bytes: number): string => {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+const getCodeLanguageFromPath = (path: string): string => {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".py")) return "python";
+  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
+  if (lower.endsWith(".js") || lower.endsWith(".jsx")) return "javascript";
+  if (lower.endsWith(".go")) return "go";
+  if (lower.endsWith(".rs")) return "rust";
+  if (lower.endsWith(".java")) return "java";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".md")) return "markdown";
+  return "text";
 };
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
@@ -321,6 +336,14 @@ const Diffs = ({ diffs }: DiffsProps) => (
         <div className="code-block-header">
           <span className="code-block-lang">{diff.file_path}</span>
         </div>
+        {diff.where_to_paste && (
+          <div className="diff-placement-note">
+            Paste location: {diff.where_to_paste}
+          </div>
+        )}
+        {diff.code && (
+          <CodeBlock code={diff.code} language={getCodeLanguageFromPath(diff.file_path)} />
+        )}
         <div className="code-block-content">
           {diff.diff.split('\n').map((line, j) => {
             let className = 'diff-line context';
@@ -331,6 +354,26 @@ const Diffs = ({ diffs }: DiffsProps) => (
         </div>
       </div>
     ))}
+  </div>
+);
+
+interface PasteGuideProps {
+  instructions: string[];
+}
+
+const PasteGuide = ({ instructions }: PasteGuideProps) => (
+  <div className="citations-container">
+    <div className="citations-title">
+      <ChevronRight size={12} />
+      Paste Guide
+    </div>
+    <div className="paste-guide-list">
+      {instructions.map((item, idx) => (
+        <div key={idx} className="paste-guide-item">
+          {item}
+        </div>
+      ))}
+    </div>
   </div>
 );
 
@@ -616,7 +659,21 @@ export default function Home() {
           md += `### 📝 Code Changes\n\n`;
           msg.diffs.forEach(d => {
             md += `**${d.file_path}**\n\`\`\`diff\n${d.diff}\n\`\`\`\n\n`;
+            if (d.where_to_paste) {
+              md += `Paste location: ${d.where_to_paste}\n\n`;
+            }
+            if (d.code) {
+              md += `\`\`\`\n${d.code}\n\`\`\`\n\n`;
+            }
           });
+        }
+
+        if (msg.paste_instructions && msg.paste_instructions.length > 0) {
+          md += `### 📌 Paste Guide\n\n`;
+          msg.paste_instructions.forEach(item => {
+            md += `- ${item}\n`;
+          });
+          md += '\n';
         }
 
         if (msg.tests) {
@@ -639,12 +696,55 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  const getRecentChatHistory = (
+    sourceMessages: Message[] = messages,
+    limit: number = 5,
+  ): Array<{ role: "user" | "assistant"; content: string }> => {
+    return sourceMessages
+      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content?.trim())
+      .slice(-limit)
+      .map((m) => ({ role: m.role, content: m.content }));
+  };
+
+  const getContextFileHints = (
+    sourceMessages: Message[] = messages,
+    limit: number = 5,
+    maxHints: number = 4,
+  ): string[] => {
+    const hints: string[] = [];
+    const seen = new Set<string>();
+    const recent = sourceMessages.slice(-limit).reverse();
+
+    for (const msg of recent) {
+      if (msg.role !== "assistant") continue;
+
+      for (const citation of msg.citations || []) {
+        const path = (citation.file_path || "").trim();
+        if (!path || seen.has(path)) continue;
+        seen.add(path);
+        hints.push(path);
+        if (hints.length >= maxHints) return hints;
+      }
+
+      for (const diff of msg.diffs || []) {
+        const path = (diff.file_path || "").trim();
+        if (!path || seen.has(path)) continue;
+        seen.add(path);
+        hints.push(path);
+        if (hints.length >= maxHints) return hints;
+      }
+    }
+
+    return hints;
+  };
+
   // Send Message
   const sendMessage = async () => {
     if (!input.trim() || !repoId) return;
 
     const userMsg: Message = { role: "user", content: input };
     setMessages(prev => [...prev, userMsg]);
+    const messageSnapshot = [...messages, userMsg];
     const currentInput = input;
     setInput("");
     setIsChatLoading(true);
@@ -652,10 +752,11 @@ export default function Home() {
     try {
       if (currentInput.startsWith("/generate ")) {
         const request = currentInput.replace("/generate ", "");
+        const chatHistory = getRecentChatHistory(messageSnapshot, 5);
         const res = await fetch(apiUrl("/chat/generate"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id: repoId, request: request }),
+          body: JSON.stringify({ repo_id: repoId, request, chat_history: chatHistory }),
         });
         const data = await res.json();
 
@@ -665,6 +766,7 @@ export default function Home() {
           role: "assistant",
           content: data.plan || "Generated changes based on your request:",
           diffs: data.diffs,
+          paste_instructions: data.paste_instructions,
           tests: data.tests,
           citations: data.citations?.map((c: string) => ({
             file_path: c,
@@ -674,10 +776,17 @@ export default function Home() {
           }))
         }]);
       } else {
+        const chatHistory = getRecentChatHistory(messageSnapshot, 5);
+        const contextFileHints = getContextFileHints(messageSnapshot, 5, 4);
         const res = await fetch(apiUrl("/chat/ask"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id: repoId, question: userMsg.content }),
+          body: JSON.stringify({
+            repo_id: repoId,
+            question: userMsg.content,
+            chat_history: chatHistory,
+            context_file_hints: contextFileHints,
+          }),
         });
         const data = await res.json();
 
@@ -1071,6 +1180,11 @@ export default function Home() {
                       {/* Diffs */}
                       {msg.diffs && msg.diffs.length > 0 && (
                         <Diffs diffs={msg.diffs} />
+                      )}
+
+                      {/* Paste instructions */}
+                      {msg.paste_instructions && msg.paste_instructions.length > 0 && (
+                        <PasteGuide instructions={msg.paste_instructions} />
                       )}
 
                       {/* Citations */}
