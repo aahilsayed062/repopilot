@@ -51,37 +51,25 @@ class Answerer:
     Generates structured answers grounded in retrieved repository chunks.
     """
 
-    MAX_CONTENT_LENGTH = 600
-    MAX_CITATIONS = 5
+    MAX_CONTENT_LENGTH = 400
+    MAX_CITATIONS = 4
 
-    SYSTEM_PROMPT = """You are RepoPilot, an evidence-grounded engineering assistant.
+    SYSTEM_PROMPT = """You are RepoPilot, an evidence-grounded code assistant.
 
-Non-negotiable rules:
-1) Use ONLY the provided context.
-2) Every factual claim must be supported by one or more provided sources.
-3) If evidence is insufficient, say that clearly instead of guessing.
-4) Write like a strong senior engineer talking to a teammate: natural, warm, direct.
-5) Be direct and decisive when evidence is present.
-6) Return valid JSON with this exact schema:
+Rules:
+1) Use ONLY the provided context. Every claim must cite a source.
+2) If evidence is insufficient, say so clearly.
+3) Be direct, technical, and concise.
+4) Return valid JSON:
 {
-  "answer": "A concrete markdown answer with sections ## Short Answer, ## Evidence From Code, ## Practical Next Step",
-  "citations": [
-    {"file_path": "path/to/file", "line_range": "L10-L20", "snippet": "short snippet", "why": "why this supports the answer"}
-  ],
+  "answer": "Markdown with ## Short Answer, ## Evidence From Code, ## Practical Next Step",
+  "citations": [{"file_path": "path", "line_range": "L10-L20", "snippet": "short", "why": "reason"}],
   "confidence": "high|medium|low",
-  "assumptions": ["optional limitations or assumptions"]
+  "assumptions": []
 }
 
-Citation rules:
-- Use only file_path and line_range that exist in the provided sources.
-- If unsure, lower confidence and state limits.
-- Keep assumptions empty unless absolutely necessary.
-
-Style rules:
-- Do not sound robotic or legalistic.
-- Keep it technical but human.
-- In evidence bullets, mention source ids like [S1], [S2] where possible.
-- Never output placeholder/template text (for example: "Markdown with sections ...").
+- Cite source ids [S1], [S2] in evidence bullets.
+- Never output placeholder or template text.
 """
 
     TEMPLATE_LEAK_MARKERS = (
@@ -430,24 +418,9 @@ Style rules:
                 if str(item).strip()
             ]
 
-            if self._is_placeholder_answer(raw_answer) or self._looks_generic_non_answer(raw_answer):
-                logger.warning("answer_quality_low_retrying")
-                try:
-                    retry_data = await self._retry_for_concrete_answer(messages, query)
-                    retry_answer = _clean_answer_text(retry_data.get("answer", "") or "")
-                    if retry_answer and not self._is_placeholder_answer(retry_answer):
-                        data = retry_data
-                        raw_answer = retry_answer
-                        retry_assumptions = retry_data.get("assumptions", [])
-                        assumptions = [
-                            str(item).strip()
-                            for item in (
-                                retry_assumptions if isinstance(retry_assumptions, list) else []
-                            )
-                            if str(item).strip()
-                        ]
-                except Exception as retry_error:
-                    logger.warning("answer_retry_failed", error=str(retry_error))
+            # Skip quality retry to conserve API quota (was doubling LLM calls)
+            if self._is_placeholder_answer(raw_answer):
+                logger.warning("answer_quality_low", answer_preview=raw_answer[:80])
 
             validated_citations = self._validate_citations(data.get("citations", []), chunks)
             if not validated_citations:

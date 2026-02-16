@@ -1,10 +1,11 @@
 """
-LLM Service - Handles interactions with OpenAI/Groq and Gemini Chat APIs.
+LLM Service - Handles interactions with Ollama (primary), OpenAI/Groq, and Gemini.
 
-Priority Logic:
-1. OpenAI/Groq (if OPENAI_API_KEY is set) - Using for chat (fast!)
-2. Gemini (if GEMINI_API_KEY is set) - Fallback for chat
-3. Mock (if no keys) - Development only
+Priority Logic (Ollama-First):
+1. Ollama (if running locally) - Primary, no token limits
+2. OpenAI/Groq (if OPENAI_API_KEY is set) - Fallback
+3. Gemini (if GEMINI_API_KEY is set) - Fallback
+4. Mock (if nothing available) - Development only
 
 Note: Embeddings are handled separately in embeddings.py (uses Gemini)
 """
@@ -25,22 +26,31 @@ logger = get_logger(__name__)
 
 
 class LLMService:
-    """Interface for Chat LLM (OpenAI/Groq or Gemini).
+    """Interface for Chat LLM (Ollama > OpenAI/Groq > Gemini > Mock).
 
-    Priority: OpenAI/Groq > Gemini > Mock
+    Priority: Ollama > OpenAI/Groq > Gemini > Mock
 
-    This allows using Groq for fast chat while Gemini handles embeddings.
+    Uses Ollama as the primary provider for unlimited local inference.
+    Falls back to cloud providers if Ollama is unavailable.
     """
 
     def __init__(self):
         self.openai_client = None
         self.gemini_model = None
-        self.provider = "mock"  # 'openai', 'gemini', or 'mock'
+        self.provider = "mock"  # 'ollama', 'openai', 'gemini', or 'mock'
+        self.ollama_base_url = settings.ollama_base_url
 
-        # Priority: OpenAI/Groq first (for chat), then Gemini, then mock
-        if settings.openai_api_key:
-            # Disable OS/env proxy inheritance for LLM calls; local proxy env values
-            # were causing slow retries and connection failures to Groq.
+        # Priority 1: Ollama (local, unlimited)
+        if self._check_ollama_available():
+            self.provider = "ollama"
+            logger.info(
+                "llm_initialized",
+                provider="Ollama",
+                model_a=settings.ollama_model_a,
+                model_b=settings.ollama_model_b,
+            )
+        # Priority 2: OpenAI/Groq
+        elif settings.openai_api_key:
             openai_http_client = httpx.AsyncClient(
                 trust_env=False,
                 timeout=httpx.Timeout(connect=8.0, read=40.0, write=20.0, pool=40.0),
@@ -62,9 +72,9 @@ class LLMService:
                 provider=provider_name,
                 model=settings.openai_chat_model,
             )
+        # Priority 3: Gemini
         elif settings.gemini_api_key:
             genai.configure(api_key=settings.gemini_api_key)
-            # Ensure gemini_chat_model has proper format
             model_name = settings.gemini_chat_model or "gemini-2.0-flash"
             if not model_name.startswith("models/"):
                 model_name = f"models/{model_name}"
@@ -73,8 +83,17 @@ class LLMService:
             logger.info("llm_initialized", provider="Gemini", model=model_name)
         else:
             logger.warning(
-                "llm_initialized", provider="mock", message="No API key configured"
+                "llm_initialized", provider="mock", message="No API key or Ollama configured"
             )
+
+    def _check_ollama_available(self) -> bool:
+        """Check if Ollama is running and reachable."""
+        try:
+            import httpx as _httpx
+            resp = _httpx.get(f"{self.ollama_base_url}/api/tags", timeout=3.0)
+            return resp.status_code == 200
+        except Exception:
+            return False
 
     def _supports_openai_json_mode(self) -> bool:
         """Return True if the configured OpenAI endpoint supports response_format JSON."""
@@ -89,43 +108,84 @@ class LLMService:
         temperature: float = 0.0,
         model: str = None,
         json_mode: bool = False,
+        provider_override: Optional[str] = None,
     ) -> str:
         """
         Get completion from LLM.
 
-        Uses priority: OpenAI/Groq > Gemini > Mock
+        Uses priority: Ollama > OpenAI/Groq > Gemini > Mock (or explicit override)
+        
+        Args:
+            provider_override: Force a specific provider ('ollama', 'ollama_b', 'openai', 'gemini')
+                              'ollama_b' uses the secondary Ollama model (Agent B / reviewer)
         """
-        if self.provider == "mock":
+        provider = provider_override or self.provider
+
+        if provider == "mock":
             return self._mock_chat(messages)
 
         try:
-            if self.provider == "openai":
+            if provider == "ollama":
+                return await self._call_ollama(messages, temperature, model or settings.ollama_model_a, json_mode)
+            elif provider == "ollama_b":
+                return await self._call_ollama(messages, temperature, model or settings.ollama_model_b, json_mode)
+            elif provider == "openai":
                 return await self._call_openai(messages, temperature, model, json_mode)
-            elif self.provider == "gemini":
+            elif provider == "gemini":
                 return await self._call_gemini(messages, temperature, json_mode)
             else:
                 return self._mock_chat(messages)
 
         except Exception as e:
-            logger.error("llm_call_failed", error=str(e), provider=self.provider)
-            # Try fallback to Gemini if OpenAI/Groq fails
-            if self.provider == "openai" and settings.gemini_api_key:
-                logger.warning("llm_fallback_to_gemini", reason=str(e))
-                try:
-                    genai.configure(api_key=settings.gemini_api_key)
-                    return await self._call_gemini(messages, temperature, json_mode)
-                except Exception as e2:
-                    logger.error("gemini_fallback_failed", error=str(e2))
+            logger.error("llm_call_failed", error=str(e), provider=provider)
+            # Try fallbacks if no explicit override
+            if not provider_override:
+                # Try Ollama fallback if not already using it
+                if provider != "ollama" and provider != "ollama_b" and self._check_ollama_available():
+                    logger.warning("llm_fallback_to_ollama", reason=str(e))
+                    try:
+                        return await self._call_ollama(messages, temperature, settings.ollama_model_a, json_mode)
+                    except Exception as e2:
+                        logger.error("ollama_fallback_failed", error=str(e2))
+                # Try Gemini fallback
+                if provider == "openai" and settings.gemini_api_key:
+                    logger.warning("llm_fallback_to_gemini", reason=str(e))
+                    try:
+                        genai.configure(api_key=settings.gemini_api_key)
+                        return await self._call_gemini(messages, temperature, json_mode)
+                    except Exception as e2:
+                        logger.error("gemini_fallback_failed", error=str(e2))
             raise
+
+    async def _call_ollama(self, messages, temperature, model, json_mode):
+        """Call local Ollama API."""
+        url = f"{self.ollama_base_url}/api/chat"
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+            }
+        }
+        if json_mode:
+            payload["format"] = "json"
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0)) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data["message"]["content"]
 
     @backoff.on_exception(
         backoff.expo,
         RateLimitError,
-        max_tries=5,
-        max_time=120,
-        factor=3,  # Longer waits for rate limits: 3, 9, 27, 81 seconds
+        max_tries=2,
+        max_time=15,
+        factor=2,
     )
-    @backoff.on_exception(backoff.expo, OpenAIError, max_tries=2, max_time=12)
+    @backoff.on_exception(backoff.expo, OpenAIError, max_tries=1, max_time=8)
     async def _call_openai(self, messages, temperature, model, json_mode):
         model = model or settings.openai_chat_model
 
@@ -142,7 +202,7 @@ class LLMService:
         response = await self.openai_client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+    @backoff.on_exception(backoff.expo, Exception, max_tries=2, max_time=10)
     async def _call_gemini(self, messages, temperature, json_mode):
         # Translate OpenAI messages to Gemini history
         system_instruction = None
@@ -205,7 +265,7 @@ class LLMService:
             "**[MOCK LLM RESPONSE]**\n\n"
             "I am running in mock mode. Here is a simulated answer.\n\n"
             "Based on the context provided, the answer is found in the retrieved chunks.\n"
-            "Please configure OPENAI_API_KEY (Groq) or GEMINI_API_KEY to get real grounded answers."
+            "Please install Ollama or configure GEMINI_API_KEY to get real grounded answers."
         )
 
 

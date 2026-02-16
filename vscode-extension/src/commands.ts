@@ -102,10 +102,26 @@ export function registerCommands(
     // Start Backend command
     context.subscriptions.push(
         vscode.commands.registerCommand('repopilot.startBackend', async () => {
-            const terminal = vscode.window.createTerminal('RepoPilot Backend');
-            terminal.sendText('python backend/run.py');
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            let cwd = '';
+            if (workspaceFolders && workspaceFolders.length > 0) {
+                cwd = workspaceFolders[0].uri.fsPath;
+            }
+
+            const terminal = vscode.window.createTerminal({
+                name: 'RepoPilot Backend',
+                cwd: cwd || undefined,
+            });
+
+            // Use the start_backend.bat if on Windows, otherwise fallback
+            const isWindows = process.platform === 'win32';
+            if (isWindows) {
+                terminal.sendText(`"${cwd}\\start_backend.bat"`);
+            } else {
+                terminal.sendText(`cd "${cwd}/backend" && python run.py`);
+            }
             terminal.show();
-            vscode.window.showInformationMessage('Starting RepoPilot backend...');
+            vscode.window.showInformationMessage('🚀 Starting RepoPilot backend...');
         })
     );
 

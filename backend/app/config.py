@@ -53,6 +53,11 @@ class Settings(BaseSettings):
 
     gemini_embedding_model: str = "models/text-embedding-004"
     gemini_chat_model: str = "gemini-2.0-flash"
+
+    # Ollama (local offline LLM)
+    ollama_base_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL")
+    ollama_model_a: str = Field(default="qwen2.5-coder:7b", validation_alias="OLLAMA_MODEL_A")
+    ollama_model_b: str = Field(default="qwen2.5-coder:1.5b", validation_alias="OLLAMA_MODEL_B")
     
     # Paths - use absolute path
     data_dir: Path = Field(default=PROJECT_ROOT / "data", validation_alias="DATA_DIR")

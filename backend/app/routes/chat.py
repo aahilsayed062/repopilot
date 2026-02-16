@@ -69,7 +69,7 @@ def _build_casual_response(question: str) -> ChatResponse:
     q = (question or "").strip().lower()
     if "thank" in q or "thx" in q:
         text = (
-            "You’re welcome. I’m ready when you want to dive into the code.\n\n"
+            "You're welcome. I'm ready when you want to dive into the code.\n\n"
             "Try asking something like:\n"
             "- `Explain how repository loading works`\n"
             "- `Where is indexing progress computed?`\n"
@@ -82,8 +82,8 @@ def _build_casual_response(question: str) -> ChatResponse:
         )
     else:
         text = (
-            "Hey. I’m here and ready.\n\n"
-            "Ask me anything about your repository and I’ll answer with concrete "
+            "Hey. I'm here and ready.\n\n"
+            "Ask me anything about your repository and I'll answer with concrete "
             "code references."
         )
 
@@ -224,6 +224,10 @@ class PyTestResponse(BaseModel):
     error: Optional[str] = None
 
 
+# ───────────────────────────────────────────────────────────────────
+# /ask — Standard Q&A endpoint
+# ───────────────────────────────────────────────────────────────────
+
 @router.post("/ask", response_model=ChatResponse)
 async def ask_question(request: ChatRequest) -> ChatResponse:
     """
@@ -268,7 +272,7 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
                 + "\n".join(f"- {p}" for p in request.context_file_hints[:4])
             )
 
-        # 1. Decomposition (only when likely beneficial)
+        # 1. Decomposition (only when explicitly requested)
         sub_questions = None
         if request.decompose or planner.should_decompose(request.question):
             try:
@@ -296,7 +300,8 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
                 f"{q}\nRelated recent conversation:\n{recent_context}"
                 for q in search_queries
             ]
-        retrieval_k = 6 if is_short_follow_up else 4
+        # Reduced k for Ollama (smaller context window, faster inference)
+        retrieval_k = 4 if is_short_follow_up else 3
 
         # 2. Retrieve in parallel
         retrievals = await asyncio.gather(
@@ -325,16 +330,19 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
         # 4. Answer with bounded context
         response = await answerer.answer(
             query=request.question,
-            chunks=unique_chunks[:6],
+            chunks=unique_chunks[:4],
             conversation_context=recent_context,
         )
-        
         return response
         
     except Exception as e:
         logger.exception("chat_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ───────────────────────────────────────────────────────────────────
+# /generate — Code generation
+# ───────────────────────────────────────────────────────────────────
 
 @router.post("/generate", response_model=GenerationResponse)
 async def generate_code(request: CodeGenerationRequest) -> GenerationResponse:
@@ -351,6 +359,10 @@ async def generate_code(request: CodeGenerationRequest) -> GenerationResponse:
         logger.exception("generation_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ───────────────────────────────────────────────────────────────────
+# /pytest — Test generation
+# ───────────────────────────────────────────────────────────────────
 
 @router.post("/pytest", response_model=PyTestResponse)
 async def generate_pytest(request: PyTestRequest) -> PyTestResponse:
@@ -374,3 +386,173 @@ async def generate_pytest(request: PyTestRequest) -> PyTestResponse:
         logger.exception("pytest_generation_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ───────────────────────────────────────────────────────────────────
+# Feature 1 (Round 2): Dynamic Multi-Agent Routing — /chat/smart
+# Agents can run in parallel, be skipped, or chain based on query.
+# ───────────────────────────────────────────────────────────────────
+
+async def _run_explain(request: ChatRequest) -> dict:
+    """Run the EXPLAIN pipeline (same logic as /ask)."""
+    response = await ask_question(request)
+    return {
+        "answer": response.answer,
+        "citations": [c.model_dump() for c in response.citations],
+        "confidence": response.confidence.value,
+        "assumptions": response.assumptions,
+        "subquestions": response.subquestions,
+    }
+
+
+async def _run_generate(request: ChatRequest) -> dict:
+    """Run the GENERATE pipeline (same logic as /generate)."""
+    gen_request = CodeGenerationRequest(
+        repo_id=request.repo_id,
+        request=request.question,
+        chat_history=[t.model_dump() for t in (request.chat_history or [])],
+    )
+    result = await generator.generate(
+        gen_request.repo_id,
+        gen_request.request,
+        chat_history=gen_request.chat_history,
+    )
+    return result.model_dump()
+
+
+async def _run_test(request: ChatRequest) -> dict:
+    """Run the TEST pipeline (same logic as /pytest)."""
+    result = await test_generator.generate_tests(
+        repo_id=request.repo_id,
+        custom_request=request.question,
+    )
+    return result
+
+
+@router.post("/smart")
+async def smart_chat(request: ChatRequest):
+    """
+    Dynamic multi-agent routing endpoint.
+    Analyzes the user's query and decides which agents to invoke.
+    
+    Agents can:
+    - Run in parallel (e.g., GENERATE + TEST simultaneously)
+    - Be skipped based on routing decision
+    - Chain (e.g., DECOMPOSE → EXPLAIN)
+    """
+    from app.services.agent_router import agent_router, AgentAction
+
+    try:
+        # Step 1: Route the query
+        decision = await agent_router.route(request.question)
+        logger.info(
+            "smart_routing_decision",
+            primary=decision.primary_action.value,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning,
+        )
+
+        # Build base result with routing metadata
+        result = {
+            "routing": decision.model_dump(),
+            "agents_used": [decision.primary_action.value],
+            "agents_skipped": decision.skip_agents,
+        }
+
+        # Step 2: Handle REFUSE immediately
+        if decision.primary_action == AgentAction.REFUSE:
+            result["answer"] = "I cannot safely process this request."
+            result["confidence"] = "low"
+            return result
+
+        # Step 3: Dispatch to agents based on routing decision
+        # Multiple agents can run concurrently via asyncio.gather
+        tasks = {}
+        if decision.primary_action == AgentAction.EXPLAIN or AgentAction.EXPLAIN in decision.secondary_actions:
+            tasks["explain"] = _run_explain(request)
+        if decision.primary_action == AgentAction.GENERATE or AgentAction.GENERATE in decision.secondary_actions:
+            tasks["generate"] = _run_generate(request)
+        if decision.primary_action == AgentAction.TEST or AgentAction.TEST in decision.secondary_actions or AgentAction.TEST in decision.parallel_agents:
+            tasks["test"] = _run_test(request)
+        if decision.primary_action == AgentAction.DECOMPOSE or decision.should_decompose:
+            # Decompose then explain — pass decompose=True to trigger planner
+            tasks["explain"] = _run_explain(
+                ChatRequest(
+                    repo_id=request.repo_id,
+                    question=request.question,
+                    decompose=True,
+                    chat_history=request.chat_history,
+                    context_file_hints=request.context_file_hints,
+                )
+            )
+
+        # Fallback: if no tasks were dispatched, default to explain
+        if not tasks:
+            tasks["explain"] = _run_explain(request)
+
+        # Step 4: Run all tasks concurrently
+        keys = list(tasks.keys())
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+        # Step 5: Merge results from all agents
+        for key, res in zip(keys, results):
+            if isinstance(res, Exception):
+                logger.error("agent_task_failed", agent=key, error=str(res))
+                result[key] = {"error": str(res)}
+            else:
+                result[key] = res
+
+        # Track which agents actually ran
+        result["agents_used"] = [decision.primary_action.value] + [
+            a.value for a in decision.secondary_actions
+        ] + [a.value for a in decision.parallel_agents]
+        # Deduplicate
+        result["agents_used"] = list(dict.fromkeys(result["agents_used"]))
+
+        # Provide a top-level answer from the primary agent result
+        if "explain" in result and isinstance(result["explain"], dict):
+            result["answer"] = result["explain"].get("answer", "")
+            result["citations"] = result["explain"].get("citations", [])
+            result["confidence"] = result["explain"].get("confidence", "medium")
+        elif "generate" in result and isinstance(result["generate"], dict):
+            result["answer"] = result["generate"].get("plan", "Code generation completed.")
+            result["confidence"] = "high"
+        else:
+            result.setdefault("answer", "Request processed.")
+            result.setdefault("confidence", "medium")
+
+        return result
+
+    except Exception as e:
+        logger.exception("smart_chat_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ───────────────────────────────────────────────────────────────────
+# Feature 2 (Round 2): Iterative PyTest-Driven Refinement — /chat/refine
+# ───────────────────────────────────────────────────────────────────
+
+@router.post("/refine")
+async def refine_code(request: CodeGenerationRequest):
+    """
+    Iterative PyTest-driven refinement loop.
+
+    Generates code → generates tests → runs pytest → if fails, refines
+    code using the failure output as feedback → repeats (max 4 iterations).
+
+    Uses the same request body as /generate:
+    - repo_id: Repository ID
+    - request: What to generate
+    - chat_history: Previous conversation turns
+    """
+    from app.services.refinement_loop import refinement_loop
+
+    try:
+        result = await refinement_loop.run_refinement(
+            repo_id=request.repo_id,
+            request=request.request,
+            chat_history=request.chat_history,
+        )
+        return result.model_dump()
+    except Exception as e:
+        logger.exception("refinement_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

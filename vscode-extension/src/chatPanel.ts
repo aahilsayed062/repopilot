@@ -150,6 +150,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 // Webview loaded, send current status
                 this.updateStatus(this._currentStatus, this._repoId, this._repoName);
 
+                // Send workspace file list for @ mentions
+                this._sendWorkspaceFileList();
+
                 // Replay history
                 if (this._history.length > 0) {
                     this._history.forEach(msg => {
@@ -189,6 +192,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             case 'GENERATE_TESTS':
                 await this._handleGenerateTests(message.customRequest);
                 break;
+
+            case 'MESSAGE_CLEAR':
+                this._history = [];
+                saveChatHistory([]);
+                break;
+
+            case 'REQUEST_FILE_CONTEXT':
+                await this._handleFileContextRequest((message as any).files);
+                break;
         }
     }
 
@@ -207,7 +219,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: 'LOADING', loading: true });
 
         try {
-            const response = await api.askQuestion(this._repoId, question);
+            // Include any pending file context
+            let questionWithContext = question;
+            if (this._pendingFileContext) {
+                questionWithContext = question + '\n\n[Referenced Files]\n' + this._pendingFileContext;
+                this._pendingFileContext = '';
+            }
+            const response = await api.askQuestion(this._repoId, questionWithContext);
             const formatted = formatChatResponse(response);
 
             this.postMessage({
@@ -241,6 +259,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     private _lastGeneratedDiffs: any[] = [];
     private _lastGeneratedTests: string = '';
+    private _pendingFileContext: string = '';
 
     /**
      * Handle generate code
@@ -525,6 +544,65 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Send workspace file list to webview for @ mentions
+     */
+    private async _sendWorkspaceFileList(): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) { return; }
+
+        try {
+            const files = await vscode.workspace.findFiles(
+                '**/*',
+                '{**/node_modules/**,**/.git/**,**/venv/**,**/__pycache__/**,**/dist/**,**/.next/**,**/build/**}',
+                500
+            );
+
+            const rootPath = workspaceFolders[0].uri.fsPath;
+            const relativePaths = files
+                .map(f => path.relative(rootPath, f.fsPath).replace(/\\/g, '/'))
+                .sort();
+
+            this._view?.webview.postMessage({
+                type: 'FILE_LIST',
+                files: relativePaths,
+            });
+        } catch {
+            // Silently fail — mentions just won't have autocomplete
+        }
+    }
+
+    /**
+     * Handle file context request — read mentioned files and inject context
+     */
+    private async _handleFileContextRequest(fileNames: string[]): Promise<void> {
+        if (!fileNames || fileNames.length === 0) { return; }
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) { return; }
+
+        const rootPath = workspaceFolders[0].uri.fsPath;
+        const contextParts: string[] = [];
+
+        for (const fileName of fileNames.slice(0, 5)) {
+            try {
+                const fullPath = path.join(rootPath, fileName);
+                const uri = vscode.Uri.file(fullPath);
+                const content = await vscode.workspace.fs.readFile(uri);
+                const text = Buffer.from(content).toString('utf-8');
+                // Limit to 2000 chars per file
+                const truncated = text.length > 2000 ? text.substring(0, 2000) + '\n... (truncated)' : text;
+                contextParts.push(`--- File: ${fileName} ---\n${truncated}`);
+            } catch {
+                contextParts.push(`--- File: ${fileName} --- (could not read)`);
+            }
+        }
+
+        // The context is now available — it will be sent with the next ASK/GENERATE
+        // Store it so the next ask/generate can use it
+        this._pendingFileContext = contextParts.join('\n\n');
+    }
+
+    /**
      * Generate HTML for webview
      */
     private _getHtmlForWebview(webview: vscode.Webview): string {
@@ -547,71 +625,129 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   <title>RepoPilot</title>
 </head>
 <body>
-  <!-- Fluid Background -->
-  <div class="fluid-background">
-    <div class="fluid-blob blob-1"></div>
-    <div class="fluid-blob blob-2"></div>
-  </div>
+  <div class="app-shell">
 
-  <div class="chat-layout">
-    <!-- Glass Header -->
-    <div class="glass-header">
-        <div class="header-brand">
-            <svg class="header-icon" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2L2 7l10 5 10-5-10-5zm0 9l2.5-1.25L12 8.5l-2.5 1.25L12 11zm0 2.5l-5-2.5-5 2.5L12 22l10-8.5-5-2.5-5 2.5z"/>
-            </svg>
-            <span>RepoPilot</span>
-        </div>
-        <div class="status-badge">
-            <div class="status-dot" id="status-dot"></div>
-            <span id="status-text">Connecting...</span>
-        </div>
-    </div>
-    
-    <!-- Messages -->
-    <div class="messages-container" id="messages">
-      <div class="message assistant">
-        <div class="message-bubble">
-          <p><strong>🚀 RepoPilot Ready</strong></p>
-          <p>I'm connected to your codebase. Ask me anything!</p>
+    <!-- ─── Top Bar ─── -->
+    <div class="top-bar">
+      <div class="top-bar-left">
+        <div class="top-bar-logo">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2L2 7l10 5 10-5-10-5zm0 15l-5-2.5V10L12 12.5 17 10v4.5L12 17z"/>
+          </svg>
+          RepoPilot
         </div>
       </div>
-    </div>
-    
-    <!-- Input Area -->
-    <div class="input-area">
-      <div class="action-buttons">
-        <button id="btn-index" class="chip">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-            </svg>
-            Index
+      <div class="top-bar-right">
+        <button class="icon-btn" id="btn-new-chat" title="New Chat">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 3.25c0-.966.784-1.75 1.75-1.75h9.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0112.75 10.5H8.061l-2.574 2.573A.25.25 0 015 12.927V10.5H3.25A1.75 1.75 0 011.5 8.75v-5.5zM3.25 3a.25.25 0 00-.25.25v5.5c0 .138.112.25.25.25h2.5v1.927l2.073-2.073.177-.104H12.75a.25.25 0 00.25-.25v-5.5a.25.25 0 00-.25-.25h-9.5z"/>
+            <path d="M8 4.5a.75.75 0 01.75.75v1h1a.75.75 0 010 1.5h-1v1a.75.75 0 01-1.5 0v-1h-1a.75.75 0 010-1.5h1v-1A.75.75 0 018 4.5z"/>
+          </svg>
         </button>
-        <button id="btn-tests" class="chip">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path>
-            </svg>
-            Tests
+        <button class="icon-btn" id="btn-history" title="Chat History">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.643 3.143L.427 1.927A.25.25 0 000 2.104V5.75c0 .138.112.25.25.25h3.646a.25.25 0 00.177-.427L2.715 4.215a6.5 6.5 0 11-1.18 4.458.75.75 0 10-1.493.154 8.001 8.001 0 101.6-5.684zM7.75 4a.75.75 0 01.75.75v2.992l2.028.812a.75.75 0 01-.557 1.392l-2.5-1A.75.75 0 017 8.25v-3.5A.75.75 0 017.75 4z"/>
+          </svg>
         </button>
-        <button id="btn-generate" class="chip">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
-            </svg>
-            Generate
-        </button>
-      </div>
-      
-      <div class="input-container">
-        <textarea id="input" placeholder="Ask about your code..." rows="1"></textarea>
-        <button id="btn-send" class="send-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path>
+        <button class="icon-btn" id="btn-settings" title="More Actions">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 9a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM1.5 9a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm13 0a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>
           </svg>
         </button>
       </div>
     </div>
+
+    <!-- ─── Status Strip ─── -->
+    <div class="status-strip">
+      <div class="status-indicator disconnected" id="status-indicator"></div>
+      <span id="status-label">Connecting…</span>
+    </div>
+
+    <!-- ─── History Panel (slide down) ─── -->
+    <div class="history-panel" id="history-panel">
+      <div class="history-header">
+        <span>Recent Chats</span>
+      </div>
+      <div id="history-list"></div>
+    </div>
+
+    <!-- ─── Settings Dropdown ─── -->
+    <div class="settings-menu" id="settings-menu">
+      <div class="settings-item" id="btn-export">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M3.5 1.75a.25.25 0 01.25-.25h3.168a.75.75 0 000-1.5H3.75A1.75 1.75 0 002 1.75v12.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 14.25V7.757a.75.75 0 00-1.5 0v6.493a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25V1.75z"/>
+          <path d="M10.604.622a.75.75 0 011.06-.012l3.146 3.084a.75.75 0 01-1.05 1.074L12 2.96v5.29a.75.75 0 01-1.5 0V2.96l-1.76 1.808a.75.75 0 01-1.075-1.046L10.604.622z"/>
+        </svg>
+        Export Chat
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-item" id="btn-clear">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19a1.75 1.75 0 001.741-1.575l.66-6.6a.75.75 0 00-1.492-.15l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"/>
+        </svg>
+        Clear Chat
+      </div>
+    </div>
+
+    <!-- ─── Chat Area ─── -->
+    <div class="chat-area">
+
+      <!-- Welcome Screen -->
+      <div class="welcome-screen" id="welcome-screen">
+        <svg class="welcome-icon" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2L2 7l10 5 10-5-10-5zm0 15l-5-2.5V10L12 12.5 17 10v4.5L12 17z"/>
+        </svg>
+        <div class="welcome-title">RepoPilot</div>
+        <div class="welcome-subtitle">Your AI-powered code companion. Ask questions, generate code, and explore your repository.</div>
+        <div class="welcome-actions">
+          <div class="welcome-action" id="welcome-index">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.28 3.22a.75.75 0 010 1.06L7.56 8l3.72 3.72a.75.75 0 11-1.06 1.06l-4.25-4.25a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0z"/></svg>
+            Index Workspace
+          </div>
+          <div class="welcome-action" id="welcome-ask">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5.933 8H8.25a.75.75 0 000-1.5H5.933a4.008 4.008 0 00-3.866 3H.75a.75.75 0 000 1.5h1.317a4.008 4.008 0 003.866 3H8.25a.75.75 0 000-1.5H5.933A2.508 2.508 0 013.52 11h4.73a.75.75 0 000-1.5H3.52a2.508 2.508 0 012.413-1.5z"/></svg>
+            Ask about your code
+          </div>
+          <div class="welcome-action" id="welcome-generate">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8.75 1.75a.75.75 0 00-1.5 0V5H4a.75.75 0 000 1.5h3.25v3.25a.75.75 0 001.5 0V6.5H12A.75.75 0 0012 5H8.75V1.75z"/></svg>
+            Generate code
+          </div>
+        </div>
+      </div>
+
+      <!-- Messages Container -->
+      <div class="messages-container hidden" id="messages-container"></div>
+    </div>
+
+    <!-- ─── Input Area ─── -->
+    <div class="input-area">
+      <div class="input-wrapper">
+        <div class="input-row">
+          <textarea id="input" placeholder="Ask RepoPilot…" rows="1"></textarea>
+          <button id="btn-send" class="send-btn" disabled>
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M.989 8L.064 2.68a1.342 1.342 0 011.85-1.462l11.33 4.835a1.34 1.34 0 010 2.442L1.914 13.33a1.342 1.342 0 01-1.85-1.463L.988 8zm1.536.75l-.608 3.594L11.18 8.5H2.525zm0-1.5h8.655L2.917 3.656l-.392 3.594z"/>
+            </svg>
+          </button>
+        </div>
+        <div class="quick-actions">
+          <button class="quick-action" id="btn-index">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.75V13.5h13.25a.75.75 0 010 1.5H.75a.75.75 0 01-.75-.75V1.75a.75.75 0 011.5 0z"/></svg>
+            Index
+          </button>
+          <button class="quick-action" id="btn-generate">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8.75 1.75a.75.75 0 00-1.5 0V5H4a.75.75 0 000 1.5h3.25v3.25a.75.75 0 001.5 0V6.5H12A.75.75 0 0012 5H8.75V1.75z"/></svg>
+            Generate
+          </button>
+          <button class="quick-action" id="btn-tests">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5.75 7a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5h-4.5zm-2.5 3a.75.75 0 000 1.5h9.5a.75.75 0 000-1.5h-9.5z"/></svg>
+            Tests
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
-  
+
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
