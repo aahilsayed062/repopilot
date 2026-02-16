@@ -1,0 +1,40 @@
+.star-border-container {
+    position: relative;
+    overflow: hidden;
+    border-radius: 0.5rem;
+}
+
+.border-gradient-bottom,
+.border-gradient-top {
+    position: absolute;
+    width: 200%;
+    height: 100%;
+    top: 0;
+    left: -50%;
+    pointer-events: none;
+}
+
+.border-gradient-bottom {
+    animation: rotate-border 6s linear infinite;
+}
+
+.border-gradient-top {
+    animation: rotate-border 6s linear infinite reverse;
+}
+
+@keyframes rotate-border {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.inner-content {
+    position: relative;
+    z-index: 1;
+    background: inherit;
+    border-radius: inherit;
+}
