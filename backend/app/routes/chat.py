@@ -415,6 +415,36 @@ async def analyze_impact(request: ImpactRequest):
 
 
 # ───────────────────────────────────────────────────────────────────
+# /evaluate — LLM vs LLM Evaluation Layer (Feature 3)
+# ───────────────────────────────────────────────────────────────────
+
+class EvaluateRequest(BaseModel):
+    request_text: str
+    generated_diffs: list[dict]
+    tests_text: str = ""
+    context: str = ""
+
+
+@router.post("/evaluate")
+async def evaluate_generation(request: EvaluateRequest):
+    """
+    Evaluate generated code using Critic-Defender-Controller pipeline.
+    """
+    try:
+        from app.services.evaluator import evaluator
+        result = await evaluator.evaluate_generation(
+            request_text=request.request_text,
+            generated_diffs=request.generated_diffs,
+            tests_text=request.tests_text,
+            context=request.context,
+        )
+        return result.model_dump()
+    except Exception as e:
+        logger.exception("evaluate_generation_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ───────────────────────────────────────────────────────────────────
 # /generate — Code generation
 # ───────────────────────────────────────────────────────────────────
 
@@ -590,6 +620,43 @@ async def smart_chat(request: ChatRequest):
         elif "generate" in result and isinstance(result["generate"], dict):
             result["answer"] = result["generate"].get("plan", "Code generation completed.")
             result["confidence"] = "high"
+            # Feature 3: run LLM-vs-LLM evaluation on generated code.
+            try:
+                diffs = result["generate"].get("diffs", [])
+                if diffs:
+                    from app.services.evaluator import evaluator
+                    eval_context = ""
+                    if isinstance(result.get("explain"), dict):
+                        eval_context = str(result["explain"].get("answer", ""))
+
+                    evaluation = await evaluator.evaluate_generation(
+                        request_text=request.question,
+                        generated_diffs=diffs,
+                        tests_text=str(result["generate"].get("tests", "")),
+                        context=eval_context,
+                    )
+                    eval_payload = evaluation.model_dump()
+                    result["evaluation"] = eval_payload
+
+                    controller = eval_payload.get("controller", {})
+                    decision = str(controller.get("decision", ""))
+                    if decision == "REQUEST_REVISION":
+                        result["evaluation_action"] = "revision_recommended"
+                    elif decision == "MERGE_FEEDBACK":
+                        improved = controller.get("improved_code_by_file", [])
+                        if isinstance(improved, list) and improved:
+                            result["evaluation_improved_code"] = improved
+                else:
+                    result["evaluation"] = {
+                        "enabled": False,
+                        "reason": "No generated diffs available for evaluation.",
+                    }
+            except Exception as eval_err:
+                logger.error("smart_evaluation_failed", error=str(eval_err))
+                result["evaluation"] = {
+                    "enabled": False,
+                    "error": str(eval_err),
+                }
         else:
             result.setdefault("answer", "Request processed.")
             result.setdefault("confidence", "medium")

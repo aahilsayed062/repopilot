@@ -1,0 +1,279 @@
+FEATURE 3 IMPLEMENTATION GUIDE
+UKR Critic-Defender-Controller (LLM vs LLM Evaluation Layer)
+
+Date baseline: 2026-02-16
+Branch baseline: main (HEAD expected at commit message "feature 4 implemented succesfully")
+
+===============================================================================
+1) GOAL
+===============================================================================
+Implement Feature 3 fully on top of already-implemented Feature 1 (router),
+Feature 2 (refinement loop), and Feature 4 (impact analysis), so that generated
+code is independently reviewed by two agents and finalized by a controller.
+
+Required outcome:
+- Two independent LLM reviews of generated code.
+- One controller decision that accepts, requests revision, or merges feedback.
+- Evaluation data returned in API response (and renderable in UI).
+- No regressions to /chat/ask, /chat/generate, /chat/pytest, /chat/smart, /chat/refine, /chat/impact.
+
+===============================================================================
+2) CURRENT STATE (ALREADY IN MAIN)
+===============================================================================
+Already present:
+- Dynamic routing endpoint: backend/app/routes/chat.py -> /chat/smart
+- Refinement endpoint: backend/app/routes/chat.py -> /chat/refine
+- Impact endpoint: backend/app/routes/chat.py -> /chat/impact
+- Router service: backend/app/services/agent_router.py
+- Refinement loop service: backend/app/services/refinement_loop.py
+- Impact analyzer service: backend/app/services/impact_analyzer.py
+- Evaluator service file exists: backend/app/services/evaluator.py
+
+Current Feature 3 gap:
+- evaluator.py exists but is not integrated into routing/generation flow.
+- /chat/smart does not attach any llm-vs-llm evaluation payload.
+- No controller decision object in response.
+- Frontend page currently calls only /chat/ask and /chat/generate.
+
+===============================================================================
+3) FEATURE 3 TARGET DESIGN
+===============================================================================
+Use Critic-Defender-Controller pattern:
+
+1. Critic Agent:
+- Focus: correctness, logic bugs, security, requirement match.
+- Output JSON: score, issues, feedback, suggested fixes.
+
+2. Defender Agent:
+- Focus: edge cases, robustness, style, testability, maintainability.
+- Output JSON: score, issues, feedback, suggested fixes.
+
+3. Controller Agent:
+- Input: original request + generated code + critic + defender outputs.
+- Output JSON decision:
+  - ACCEPT_ORIGINAL
+  - REQUEST_REVISION
+  - MERGE_FEEDBACK
+- Provide final score, confidence, merged findings, and optional improved code.
+
+Independence requirement:
+- Prefer different providers for critic/defender when available.
+- Provider selection rule:
+  - Critic: provider_override="ollama"
+  - Defender: provider_override="gemini" if GEMINI_API_KEY exists, else "ollama_b"
+  - Controller: provider_override="ollama"
+- If one agent fails, continue with degraded confidence (do not fail whole request).
+
+===============================================================================
+4) RESPONSE CONTRACT (ADD THIS TO /chat/smart GENERATE PATH)
+===============================================================================
+When generation runs (primary or secondary action), include:
+
+"evaluation": {
+  "enabled": true,
+  "critic": {
+    "provider": "ollama",
+    "score": 7.5,
+    "issues": ["..."],
+    "feedback": "...",
+    "suggested_changes": ["..."]
+  },
+  "defender": {
+    "provider": "gemini|ollama_b",
+    "score": 7.0,
+    "issues": ["..."],
+    "feedback": "...",
+    "suggested_changes": ["..."]
+  },
+  "controller": {
+    "decision": "ACCEPT_ORIGINAL|REQUEST_REVISION|MERGE_FEEDBACK",
+    "reasoning": "...",
+    "final_score": 7.3,
+    "confidence": 0.0-1.0,
+    "merged_issues": ["..."],
+    "priority_fixes": ["..."],
+    "improved_code_by_file": [{"file_path":"...", "code":"..."}]
+  }
+}
+
+Important:
+- Keep top-level existing keys unchanged for backward compatibility.
+- Add evaluation payload as additive field only.
+
+===============================================================================
+5) FILE-BY-FILE IMPLEMENTATION TASKS
+===============================================================================
+
+-------------------------------------------------------------------------------
+A. backend/app/services/evaluator.py
+-------------------------------------------------------------------------------
+Replace/upgrade current evaluator to full CDC model.
+
+Add Pydantic models:
+- ReviewerVerdict:
+  - provider: str
+  - score: float
+  - issues: List[str]
+  - feedback: str
+  - suggested_changes: List[str] = []
+- ControllerVerdict:
+  - decision: str
+  - reasoning: str
+  - final_score: float
+  - confidence: float
+  - merged_issues: List[str]
+  - priority_fixes: List[str]
+  - improved_code_by_file: List[dict] = []
+- LLMVsLLMResult:
+  - enabled: bool = True
+  - critic: ReviewerVerdict | None
+  - defender: ReviewerVerdict | None
+  - controller: ControllerVerdict
+
+Add public method:
+- async evaluate_generation(
+    request_text: str,
+    generated_diffs: List[dict],
+    tests_text: str = "",
+    context: str = ""
+  ) -> LLMVsLLMResult
+
+Implementation details:
+- Build compact code bundle from diffs:
+  - Use each diff's "file_path" + ("code" or "content" or "diff"), capped per file.
+  - Cap total prompt size (for example 10k chars).
+- Run critic and defender concurrently with asyncio.gather(return_exceptions=True).
+- Parse JSON robustly (strip markdown fences; fallback defaults).
+- Run controller even if one reviewer failed.
+- If controller fails, fallback decision:
+  - final_score = weighted score of available reviewers
+  - decision = ACCEPT_ORIGINAL if score >= 7.5 else REQUEST_REVISION
+- Never raise unless unrecoverable internal bug; return safe fallback object.
+
+-------------------------------------------------------------------------------
+B. backend/app/routes/chat.py
+-------------------------------------------------------------------------------
+Integrate evaluator into /chat/smart.
+
+In smart_chat() after gathering task results:
+- If generate result exists and has diffs:
+  - call evaluator.evaluate_generation(
+      request_text=request.question,
+      generated_diffs=result["generate"]["diffs"],
+      tests_text=result["generate"].get("tests", ""),
+      context=result.get("answer", "")
+    )
+  - attach model_dump() into result["evaluation"]
+
+Controller-driven post-processing:
+- If decision == "REQUEST_REVISION":
+  - keep original diffs unchanged (do not mutate silently)
+  - add top-level advisory field:
+    result["evaluation_action"] = "revision_recommended"
+- If decision == "MERGE_FEEDBACK" and improved_code_by_file non-empty:
+  - include under:
+    result["evaluation_improved_code"] = controller.improved_code_by_file
+  - do not overwrite original diffs automatically
+
+Optional:
+- Add dedicated endpoint:
+  - POST /chat/evaluate
+  - input: repo_id, request, diffs/tests
+  - output: evaluation payload only
+- This is useful for manual debugging and demo.
+
+-------------------------------------------------------------------------------
+C. backend/app/models/chat.py (optional but recommended)
+-------------------------------------------------------------------------------
+If you want typed schema for Feature 3:
+- Add optional fields to ChatResponse (or add dedicated response model for /smart):
+  - evaluation: Optional[dict] = None
+  - evaluation_action: Optional[str] = None
+
+Note:
+- /chat/smart currently returns dict, so strict model changes are not required.
+
+-------------------------------------------------------------------------------
+D. frontend/src/app/page.tsx (if Feature 3 must be visible in UI)
+-------------------------------------------------------------------------------
+Current page.tsx uses /chat/ask and /chat/generate only.
+
+Minimum change for Feature 3 visibility:
+- When user uses generation flow, call /chat/smart instead for generate-type tasks
+  or add a command like /smart.
+- If response has evaluation:
+  - render section:
+    - Critic score + issues count
+    - Defender score + issues count
+    - Controller decision + final score
+    - Priority fixes list
+
+Keep existing rendering for diffs/tests/citations intact.
+
+===============================================================================
+6) PROMPT CONTRACTS (STRICT JSON)
+===============================================================================
+All evaluator prompts must return strict JSON. Use this pattern:
+
+- System prompt:
+  "Return valid JSON only. No markdown fences."
+- User prompt includes:
+  - user request
+  - generated code bundle
+  - optional tests
+  - expected schema
+
+Always clean response:
+- strip ```json ... ```
+- json.loads with fallback object on parse failure
+
+===============================================================================
+7) ACCEPTANCE CRITERIA
+===============================================================================
+Feature 3 is complete only if all pass:
+
+1. /chat/smart generation response includes "evaluation" object.
+2. evaluation has critic + defender + controller sections.
+3. controller decision is one of:
+   ACCEPT_ORIGINAL | REQUEST_REVISION | MERGE_FEEDBACK
+4. If one reviewer fails, endpoint still returns 200 with degraded confidence.
+5. Existing endpoints still work:
+   /chat/ask, /chat/generate, /chat/pytest, /chat/refine, /chat/impact.
+
+===============================================================================
+8) QUICK TEST COMMANDS
+===============================================================================
+
+1) Smart generation with evaluation:
+curl -X POST http://localhost:8000/chat/smart ^
+  -H "Content-Type: application/json" ^
+  -d "{\"repo_id\":\"<REPO_ID>\",\"question\":\"Add input validation to load_repo and tests\"}"
+
+Expected:
+- 200 response
+- contains routing.primary_action GENERATE (or includes generate action)
+- contains evaluation.controller.decision
+
+2) Degraded mode (force one reviewer unavailable):
+- Temporarily disable GEMINI key or force provider in evaluator.
+- Request again and confirm 200 + evaluation still present.
+
+===============================================================================
+9) NON-NEGOTIABLES
+===============================================================================
+- Do not break existing payload keys used by frontend/extension.
+- Do not silently replace user-visible generated diffs with controller code.
+- Keep evaluator failures isolated; no full request crash.
+- Keep timeouts bounded (LLM calls should have sensible max duration).
+
+===============================================================================
+10) IMPLEMENTATION ORDER (RECOMMENDED)
+===============================================================================
+1. Upgrade evaluator.py (models + CDC evaluate_generation).
+2. Wire evaluator into /chat/smart generation path.
+3. Add optional /chat/evaluate endpoint for testing.
+4. Add UI rendering for evaluation block (if required by demo).
+5. Run smoke tests and confirm no regressions.
+
+End of guide.
+
