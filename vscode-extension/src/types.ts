@@ -135,6 +135,96 @@ export interface ImpactAnalysisResponse {
 }
 
 // ============================================================================
+// Evaluation Models (Feature 3)
+// ============================================================================
+
+export interface EvaluationReview {
+    provider: string;
+    score: number;
+    issues: string[];
+    feedback: string;
+    suggested_changes: string[];
+}
+
+export interface EvaluationController {
+    decision: string;
+    reasoning: string;
+    final_score: number;
+    confidence: number;
+    merged_issues: string[];
+    priority_fixes: string[];
+    improved_code_by_file: Array<{ file_path: string; code: string }>;
+}
+
+export interface EvaluationResult {
+    enabled: boolean;
+    critic?: EvaluationReview;
+    defender?: EvaluationReview;
+    controller: EvaluationController;
+}
+
+export interface EvaluateRequest {
+    request_text: string;
+    generated_diffs: Array<{ file_path: string; diff: string; code?: string; content?: string }>;
+    tests_text?: string;
+    context?: string;
+}
+
+// ============================================================================
+// Smart Chat Models (Feature 1)
+// ============================================================================
+
+export interface SmartChatRequest {
+    repo_id: string;
+    question: string;
+    chat_history?: Array<{ role: string; content: string }>;
+    context_file_hints?: string[];
+    decompose?: boolean;
+}
+
+export interface SmartChatResponse {
+    routing: any;
+    agents_used: string[];
+    agents_skipped: string[];
+    answer: string;
+    citations?: Citation[];
+    confidence?: string;
+    explain?: any;
+    generate?: GenerationResponse;
+    test?: any;
+    evaluation?: EvaluationResult;
+    evaluation_action?: string;
+    evaluation_improved_code?: Array<{ file_path: string; code: string }>;
+}
+
+// ============================================================================
+// Refine Models (Feature 2)
+// ============================================================================
+
+export interface RefineRequest {
+    repo_id: string;
+    request: string;
+    chat_history?: Array<{ role: string; content: string }>;
+}
+
+export interface RefineIterationResult {
+    iteration: number;
+    tests_passed: boolean;
+    refinement_action: string;
+    test_output: string;
+    failures: string[];
+}
+
+export interface RefineResponse {
+    success: boolean;
+    total_iterations: number;
+    final_code: string;
+    final_tests: string;
+    iteration_log: RefineIterationResult[];
+    final_test_output: string;
+}
+
+// ============================================================================
 // PyTest Generation Models
 // ============================================================================
 
@@ -165,6 +255,7 @@ export type WebviewToExtensionMessage =
     | { type: 'ASK'; question: string }
     | { type: 'GENERATE'; request: string }
     | { type: 'GENERATE_TESTS'; customRequest?: string }
+    | { type: 'REFINE'; request: string }
     | { type: 'INDEX_WORKSPACE' }
     | { type: 'OPEN_CITATION'; file_path: string; start_line?: number; end_line?: number }
     | { type: 'READY' }

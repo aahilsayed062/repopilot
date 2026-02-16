@@ -59,43 +59,10 @@ export function registerCommands(
             if (prompt) {
                 await vscode.commands.executeCommand('repopilot.chatView.focus');
 
-                // Show as user message and trigger generation
-                chatPanel.postMessage({
-                    type: 'MESSAGE_APPEND',
-                    role: 'user',
-                    content: `/generate ${prompt}`,
-                });
-
-                // Handle generation
-                const repoId = chatPanel.getRepoId();
-                if (!repoId) {
-                    chatPanel.postMessage({
-                        type: 'ERROR_TOAST',
-                        message: 'No repository indexed. Index workspace first.',
-                    });
-                    return;
-                }
-
-                chatPanel.postMessage({ type: 'LOADING', loading: true });
-
-                try {
-                    const { generateCode } = await import('./apiClient');
-                    const { formatGenerationResponse } = await import('./responseFormatter');
-
-                    const response = await generateCode(repoId, prompt);
-                    const formatted = formatGenerationResponse(response);
-
-                    chatPanel.postMessage({
-                        type: 'MESSAGE_APPEND',
-                        role: 'assistant',
-                        content: formatted,
-                    });
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : 'Generation failed';
-                    chatPanel.postMessage({ type: 'ERROR_TOAST', message });
-                } finally {
-                    chatPanel.postMessage({ type: 'LOADING', loading: false });
-                }
+                // Delegate to chat panel's smart routing pipeline.
+                // injectQuestion shows the user message and routes through
+                // Feature 1 (routing), Feature 3 (evaluation), Feature 4 (impact).
+                await chatPanel.injectQuestion(prompt);
             }
         })
     );

@@ -4,7 +4,7 @@
  * Formats backend responses into a clean, simple template.
  */
 
-import { ChatResponse, GenerationResponse, Citation, ImpactAnalysisResponse } from './types';
+import { ChatResponse, GenerationResponse, Citation, ImpactAnalysisResponse, EvaluationResult } from './types';
 
 /**
  * Format a chat (ask) response - simplified version
@@ -174,6 +174,49 @@ export function formatImpactReport(report: ImpactAnalysisResponse): string {
     if (report.recommendations.length > 0) {
         const topRecs = report.recommendations.slice(0, 2).map(r => `💡 ${r}`).join(' · ');
         parts.push(topRecs);
+    }
+
+    return parts.join('\n');
+}
+
+/**
+ * Format an LLM evaluation report (Feature 3) — compact inline note
+ */
+export function formatEvaluationReport(evaluation: EvaluationResult): string {
+    if (!evaluation.enabled) {
+        return '';
+    }
+
+    const ctrl = evaluation.controller;
+    const decisionEmoji: Record<string, string> = {
+        'ACCEPT_ORIGINAL': '✅',
+        'MERGE_FEEDBACK': '🔀',
+        'REQUEST_REVISION': '🔄',
+    };
+    const emoji = decisionEmoji[ctrl.decision] || '❓';
+
+    const parts: string[] = [];
+    parts.push(`**🧪 Evaluation:** ${emoji} **${ctrl.decision.replace(/_/g, ' ')}** — Score: ${ctrl.final_score}/10 (${Math.round(ctrl.confidence * 100)}% confidence)`);
+
+    // Reviewer scores
+    const reviewerParts: string[] = [];
+    if (evaluation.critic) {
+        reviewerParts.push(`🔍 Critic: ${evaluation.critic.score}/10`);
+    }
+    if (evaluation.defender) {
+        reviewerParts.push(`🛡️ Defender: ${evaluation.defender.score}/10`);
+    }
+    if (reviewerParts.length > 0) {
+        parts.push(reviewerParts.join(' · '));
+    }
+
+    if (ctrl.reasoning) {
+        parts.push(`> ${ctrl.reasoning}`);
+    }
+
+    if (ctrl.priority_fixes.length > 0) {
+        const topFixes = ctrl.priority_fixes.slice(0, 3).map(f => `⚡ ${f}`).join('\n');
+        parts.push(topFixes);
     }
 
     return parts.join('\n');

@@ -13,7 +13,7 @@ import {
     Citation,
 } from './types';
 import * as api from './apiClient';
-import { formatChatResponse, formatGenerationResponse, formatSafeRefusal, formatImpactReport } from './responseFormatter';
+import { formatChatResponse, formatGenerationResponse, formatSafeRefusal, formatImpactReport, formatEvaluationReport } from './responseFormatter';
 import { openCitedFile, parseLineRange } from './fileOpener';
 import { getStoredState, saveRepoInfo, getStoredRepoId, loadChatHistory, saveChatHistory } from './storage';
 
@@ -170,6 +170,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 await this._handleGenerate(message.request);
                 break;
 
+            case 'REFINE':
+                await this._handleRefine((message as any).request);
+                break;
+
             case 'INDEX_WORKSPACE':
                 await this._handleIndexWorkspace();
                 break;
@@ -222,7 +226,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * Handle ask question
+     * Handle ask question — uses /chat/smart for dynamic multi-agent routing (Feature 1)
      */
     private async _handleAsk(question: string): Promise<void> {
         if (!this._repoId) {
@@ -239,31 +243,151 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         try {
             // Include any pending file context
             let questionWithContext = question;
+            const contextFileHints: string[] = [];
             if (this._pendingFileContext) {
                 questionWithContext = question + '\n\n[Referenced Files]\n' + this._pendingFileContext;
                 this._pendingFileContext = '';
             }
 
-            // Start with an empty message
+            // Heuristic: simple explain/question queries → stream for better UX
+            const GEN_KEYWORDS = /\b(add|create|modify|implement|generate|write|build|fix|refactor|change|update|delete|remove|rename|move|extract|convert|replace|insert|make)\b/i;
+            const isLikelyExplain = !GEN_KEYWORDS.test(question);
+
+            if (isLikelyExplain) {
+                // Stream token-by-token for explain-only queries
+                this.postMessage({
+                    type: 'MESSAGE_APPEND',
+                    role: 'assistant',
+                    content: '> 💬 **Route:** EXPLAIN (streaming)\n\n',
+                });
+
+                let accumulated = '> 💬 **Route:** EXPLAIN (streaming)\n\n';
+                for await (const token of api.streamChat(this._repoId, questionWithContext)) {
+                    if (this._abortController?.signal.aborted) break;
+                    accumulated += token;
+                    this.postMessage({ type: 'MESSAGE_UPDATE', content: accumulated });
+                }
+
+                this.postMessage({ type: 'LOADING', loading: false });
+                return;
+            }
+
+            // Use /chat/smart for dynamic multi-agent routing (Feature 1)
+            const smartResult = await api.smartChat(this._repoId, questionWithContext, undefined, contextFileHints);
+
+            // Build routing badge
+            const routing = smartResult.routing || {};
+            const primaryAction = routing.primary_action || 'EXPLAIN';
+            const agentsUsed = smartResult.agents_used || [];
+            const agentsSkipped = smartResult.agents_skipped || [];
+
+            let content = '';
+
+            // Routing info header
+            const routingEmoji: Record<string, string> = {
+                'EXPLAIN': '💬', 'GENERATE': '⚙️', 'TEST': '🧪',
+                'DECOMPOSE': '🔀', 'REFUSE': '🚫',
+            };
+            const emoji = routingEmoji[primaryAction] || '🤖';
+            content += `> ${emoji} **Route:** ${primaryAction}`;
+            if (agentsUsed.length > 1) {
+                content += ` + ${agentsUsed.slice(1).join(', ')}`;
+            }
+            if (agentsSkipped.length > 0) {
+                content += ` · Skipped: ${agentsSkipped.join(', ')}`;
+            }
+            content += '\n\n';
+
+            // Main answer
+            content += smartResult.answer || '';
+
+            // If generation results exist, format them
+            if (smartResult.generate && typeof smartResult.generate === 'object' && !smartResult.generate.error) {
+                const genData = smartResult.generate;
+                if (genData.plan) {
+                    content += `\n\n### 📋 Plan\n${genData.plan}`;
+                }
+                if (genData.diffs && genData.diffs.length > 0) {
+                    this._lastGeneratedDiffs = genData.diffs;
+                    content += `\n\n### 🔧 Changes — ${genData.diffs.length} file(s)`;
+                    for (const diff of genData.diffs) {
+                        content += `\n\n#### 📁 ${diff.file_path}`;
+                        if (diff.diff) {
+                            content += `\n\`\`\`diff\n${diff.diff}\n\`\`\``;
+                        }
+                    }
+                }
+                if (genData.tests) {
+                    this._lastGeneratedTests = genData.tests;
+                    content += `\n\n### 🧪 Tests\n\`\`\`python\n${genData.tests}\n\`\`\``;
+                }
+            }
+
+            // If test results exist, show them
+            if (smartResult.test && typeof smartResult.test === 'object' && !smartResult.test.error) {
+                const testData = smartResult.test;
+                if (testData.tests) {
+                    content += `\n\n### 🧪 Generated Tests\n\`\`\`python\n${testData.tests}\n\`\`\``;
+                }
+            }
+
+            // Evaluation results (Feature 3)
+            if (smartResult.evaluation && smartResult.evaluation.enabled) {
+                const evalFormatted = formatEvaluationReport(smartResult.evaluation);
+                if (evalFormatted) {
+                    content += `\n\n---\n${evalFormatted}`;
+                }
+
+                // Auto-apply MERGE_FEEDBACK: swap original diffs with controller's improved code
+                if (smartResult.evaluation.controller?.decision === 'MERGE_FEEDBACK'
+                    && smartResult.evaluation_improved_code
+                    && smartResult.evaluation_improved_code.length > 0) {
+                    this._lastGeneratedDiffs = smartResult.evaluation_improved_code.map((ic: any) => ({
+                        file_path: ic.file_path,
+                        content: ic.code,
+                        code: ic.code,
+                        diff: ic.code,
+                    }));
+                    content += `\n\n> ✨ **Merged feedback applied** — Accept buttons now use the improved code.`;
+                }
+            }
+
+            // Impact analysis on generated code
+            if (this._lastGeneratedDiffs.length > 0 && this._repoId) {
+                try {
+                    const changedFiles = this._lastGeneratedDiffs.map((d: any) => d.file_path);
+                    const codeChanges = this._lastGeneratedDiffs
+                        .map((d: any) => `--- ${d.file_path} ---\n${d.diff || ''}`)
+                        .join('\n');
+                    const impact = await api.analyzeImpact(this._repoId, changedFiles, codeChanges);
+                    const impactFormatted = formatImpactReport(impact);
+                    content += `\n\n---\n${impactFormatted}`;
+                } catch {
+                    // Impact analysis is non-critical
+                }
+            }
+
+            // Build buttons
+            const buttons: { label: string; action: string }[] = [];
+            if (this._lastGeneratedDiffs.length > 0) {
+                buttons.push({ label: '✅ Accept All', action: 'ACCEPT_ALL' });
+            }
+            if (this._lastGeneratedTests && this._lastGeneratedTests.trim().length > 0) {
+                buttons.push({ label: '🧪 Run Tests', action: 'RUN_TESTS' });
+            }
+
             this.postMessage({
                 type: 'MESSAGE_APPEND',
                 role: 'assistant',
-                content: '',
+                content,
+                citations: smartResult.citations?.map((c: any) => ({
+                    file_path: c.file_path,
+                    line_range: c.line_range || '',
+                    snippet: c.snippet || '',
+                    why: c.why || '',
+                })),
+                buttons: buttons.length > 0 ? buttons : undefined,
             });
-
-            let fullContent = '';
-
-            // Stream the response
-            for await (const chunk of api.streamChat(this._repoId, questionWithContext)) {
-                fullContent += chunk;
-                this.postMessage({
-                    type: 'MESSAGE_UPDATE',
-                    content: fullContent,
-                });
-            }
-
-            // We don't have structured citations from the stream yet, 
-            // but the text contains [S1] etc. which is fine for now.
 
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
@@ -278,9 +402,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 ['Ensure the backend is running', 'Try re-indexing the workspace']
             );
 
-            // If we already started streaming, update the message with error
             this.postMessage({
-                type: 'MESSAGE_UPDATE',
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
                 content: refusal + `\n\nError details: ${message}`,
             });
 
@@ -349,13 +473,48 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                     const impact = await api.analyzeImpact(this._repoId, changedFiles, codeChanges);
                     const impactFormatted = formatImpactReport(impact);
                     // Append to the same message (not a separate bubble)
+                    let updatedContent = formatted + '\n\n---\n' + impactFormatted;
+
+                    // Feature 3: Auto-run LLM Evaluation
+                    try {
+                        const evalResult = await api.evaluateCode(
+                            request,
+                            this._lastGeneratedDiffs,
+                            this._lastGeneratedTests,
+                        );
+                        if (evalResult.enabled) {
+                            const evalFormatted = formatEvaluationReport(evalResult);
+                            updatedContent += '\n\n---\n' + evalFormatted;
+                        }
+                    } catch (evalErr) {
+                        console.warn('Evaluation failed (non-critical):', evalErr);
+                    }
+
                     this.postMessage({
                         type: 'MESSAGE_UPDATE',
-                        content: formatted + '\n\n---\n' + impactFormatted,
+                        content: updatedContent,
                     });
                 } catch (impactErr) {
                     // Impact analysis is non-critical — don't block on failure
                     console.warn('Impact analysis failed (non-critical):', impactErr);
+
+                    // Still try evaluation even if impact fails
+                    try {
+                        const evalResult = await api.evaluateCode(
+                            request,
+                            this._lastGeneratedDiffs,
+                            this._lastGeneratedTests,
+                        );
+                        if (evalResult.enabled) {
+                            const evalFormatted = formatEvaluationReport(evalResult);
+                            this.postMessage({
+                                type: 'MESSAGE_UPDATE',
+                                content: formatted + '\n\n---\n' + evalFormatted,
+                            });
+                        }
+                    } catch {
+                        // Both non-critical
+                    }
                 }
             }
         } catch (error) {
@@ -369,6 +528,62 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 type: 'MESSAGE_APPEND',
                 role: 'assistant',
                 content: refusal,
+            });
+            this.postMessage({ type: 'ERROR_TOAST', message });
+        } finally {
+            this.postMessage({ type: 'LOADING', loading: false });
+        }
+    }
+
+    /**
+     * Handle iterative refinement (Feature 2)
+     */
+    private async _handleRefine(request: string): Promise<void> {
+        if (!this._repoId) {
+            this.postMessage({
+                type: 'ERROR_TOAST',
+                message: 'No repository indexed. Click "Index Workspace" first.',
+            });
+            return;
+        }
+
+        this.postMessage({ type: 'LOADING', loading: true });
+
+        try {
+            const result = await api.refineCode(this._repoId, request);
+
+            // Build summary
+            let content = `## 🔄 Refinement Result\n\n`;
+            content += `**Success:** ${result.success ? '✅ Yes' : '❌ No'}\n`;
+            content += `**Iterations:** ${result.total_iterations}/4\n\n`;
+
+            // Iteration log
+            for (const it of result.iteration_log) {
+                const icon = it.tests_passed ? '✅' : '❌';
+                content += `**Iteration ${it.iteration}:** ${icon} — ${it.refinement_action || 'N/A'}\n`;
+            }
+
+            content += `\n### Final Test Output\n\`\`\`\n${(result.final_test_output || '').slice(0, 1000)}\n\`\`\`\n`;
+
+            if (result.final_code) {
+                content += `\n### Final Code\n\`\`\`python\n${result.final_code}\n\`\`\`\n`;
+            }
+
+            if (result.final_tests) {
+                content += `\n### Final Tests\n\`\`\`python\n${result.final_tests}\n\`\`\`\n`;
+            }
+
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Refinement failed';
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content: formatSafeRefusal('Refinement failed.', ['Check backend logs', 'Ensure pytest is installed']),
             });
             this.postMessage({ type: 'ERROR_TOAST', message });
         } finally {

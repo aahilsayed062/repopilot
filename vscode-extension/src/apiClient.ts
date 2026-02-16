@@ -20,6 +20,12 @@ import {
     ImpactAnalysisResponse,
     PyTestRequest,
     PyTestResponse,
+    SmartChatRequest,
+    SmartChatResponse,
+    EvaluateRequest,
+    EvaluationResult,
+    RefineRequest,
+    RefineResponse,
 } from './types';
 
 /**
@@ -318,6 +324,70 @@ export async function generatePyTest(
     }, 120000); // 2 min -- LLM can be slow
 }
 
+
+/**
+ * Smart chat — dynamic multi-agent routing (Feature 1)
+ */
+export async function smartChat(
+    repoId: string,
+    question: string,
+    chatHistory?: Array<{ role: string; content: string }>,
+    contextFileHints?: string[]
+): Promise<SmartChatResponse> {
+    const body: SmartChatRequest = {
+        repo_id: repoId,
+        question,
+        chat_history: chatHistory,
+        context_file_hints: contextFileHints,
+    };
+
+    return fetchJson<SmartChatResponse>('/chat/smart', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }, 180000); // 3 min — may run multiple agents
+}
+
+/**
+ * Evaluate generated code using Critic-Defender-Controller (Feature 3)
+ */
+export async function evaluateCode(
+    requestText: string,
+    generatedDiffs: Array<{ file_path: string; diff: string; code?: string; content?: string }>,
+    testsText: string = '',
+    context: string = ''
+): Promise<EvaluationResult> {
+    const body: EvaluateRequest = {
+        request_text: requestText,
+        generated_diffs: generatedDiffs,
+        tests_text: testsText,
+        context,
+    };
+
+    return fetchJson<EvaluationResult>('/chat/evaluate', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }, 120000); // 2 min
+}
+
+/**
+ * Iterative PyTest-driven refinement (Feature 2)
+ */
+export async function refineCode(
+    repoId: string,
+    request: string,
+    chatHistory?: Array<{ role: string; content: string }>
+): Promise<RefineResponse> {
+    const body: RefineRequest = {
+        repo_id: repoId,
+        request,
+        chat_history: chatHistory,
+    };
+
+    return fetchJson<RefineResponse>('/chat/refine', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }, 300000); // 5 min — multiple iterations
+}
 
 /**
  * Full workflow: Load repo, index if needed, return repo_id

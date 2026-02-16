@@ -569,17 +569,24 @@ async def smart_chat(request: ChatRequest):
             return result
 
         # Step 3: Dispatch to agents based on routing decision
-        # Multiple agents can run concurrently via asyncio.gather
-        tasks = {}
+        # Feature 3 constraint: evaluation must run BEFORE test generation.
+        # So we split into two phases:
+        #   Phase A: EXPLAIN + GENERATE (can run in parallel)
+        #   Phase B: EVALUATE generated code (if any)
+        #   Phase C: TEST (only if evaluation passes or no generation occurred)
+
+        phase_a_tasks = {}
+        wants_test = False
+
         if decision.primary_action == AgentAction.EXPLAIN or AgentAction.EXPLAIN in decision.secondary_actions:
-            tasks["explain"] = _run_explain(request)
+            phase_a_tasks["explain"] = _run_explain(request)
         if decision.primary_action == AgentAction.GENERATE or AgentAction.GENERATE in decision.secondary_actions:
-            tasks["generate"] = _run_generate(request)
+            phase_a_tasks["generate"] = _run_generate(request)
         if decision.primary_action == AgentAction.TEST or AgentAction.TEST in decision.secondary_actions or AgentAction.TEST in decision.parallel_agents:
-            tasks["test"] = _run_test(request)
+            wants_test = True
         if decision.primary_action == AgentAction.DECOMPOSE or decision.should_decompose:
             # Decompose then explain — pass decompose=True to trigger planner
-            tasks["explain"] = _run_explain(
+            phase_a_tasks["explain"] = _run_explain(
                 ChatRequest(
                     repo_id=request.repo_id,
                     question=request.question,
@@ -590,37 +597,24 @@ async def smart_chat(request: ChatRequest):
             )
 
         # Fallback: if no tasks were dispatched, default to explain
-        if not tasks:
-            tasks["explain"] = _run_explain(request)
+        if not phase_a_tasks and not wants_test:
+            phase_a_tasks["explain"] = _run_explain(request)
 
-        # Step 4: Run all tasks concurrently
-        keys = list(tasks.keys())
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        # Phase A: Run explain + generate concurrently
+        if phase_a_tasks:
+            keys_a = list(phase_a_tasks.keys())
+            results_a = await asyncio.gather(*phase_a_tasks.values(), return_exceptions=True)
+            for key, res in zip(keys_a, results_a):
+                if isinstance(res, Exception):
+                    logger.error("agent_task_failed", agent=key, error=str(res))
+                    result[key] = {"error": str(res)}
+                else:
+                    result[key] = res
 
-        # Step 5: Merge results from all agents
-        for key, res in zip(keys, results):
-            if isinstance(res, Exception):
-                logger.error("agent_task_failed", agent=key, error=str(res))
-                result[key] = {"error": str(res)}
-            else:
-                result[key] = res
-
-        # Track which agents actually ran
-        result["agents_used"] = [decision.primary_action.value] + [
-            a.value for a in decision.secondary_actions
-        ] + [a.value for a in decision.parallel_agents]
-        # Deduplicate
-        result["agents_used"] = list(dict.fromkeys(result["agents_used"]))
-
-        # Provide a top-level answer from the primary agent result
-        if "explain" in result and isinstance(result["explain"], dict):
-            result["answer"] = result["explain"].get("answer", "")
-            result["citations"] = result["explain"].get("citations", [])
-            result["confidence"] = result["explain"].get("confidence", "medium")
-        elif "generate" in result and isinstance(result["generate"], dict):
-            result["answer"] = result["generate"].get("plan", "Code generation completed.")
-            result["confidence"] = "high"
-            # Feature 3: run LLM-vs-LLM evaluation on generated code.
+        # Phase B: Feature 3 — Run LLM-vs-LLM evaluation on generated code
+        # This runs AFTER generate, BEFORE test (as required by round2essential)
+        evaluation_allows_test = True
+        if "generate" in result and isinstance(result["generate"], dict):
             try:
                 diffs = result["generate"].get("diffs", [])
                 if diffs:
@@ -639,10 +633,11 @@ async def smart_chat(request: ChatRequest):
                     result["evaluation"] = eval_payload
 
                     controller = eval_payload.get("controller", {})
-                    decision = str(controller.get("decision", ""))
-                    if decision == "REQUEST_REVISION":
+                    eval_decision = str(controller.get("decision", ""))
+                    if eval_decision == "REQUEST_REVISION":
                         result["evaluation_action"] = "revision_recommended"
-                    elif decision == "MERGE_FEEDBACK":
+                        evaluation_allows_test = False  # Don't test code that needs revision
+                    elif eval_decision == "MERGE_FEEDBACK":
                         improved = controller.get("improved_code_by_file", [])
                         if isinstance(improved, list) and improved:
                             result["evaluation_improved_code"] = improved
@@ -657,6 +652,39 @@ async def smart_chat(request: ChatRequest):
                     "enabled": False,
                     "error": str(eval_err),
                 }
+
+        # Phase C: Run TEST only after evaluation passes (Feature 3 requirement)
+        if wants_test and evaluation_allows_test:
+            try:
+                test_result = await _run_test(request)
+                result["test"] = test_result
+            except Exception as test_err:
+                logger.error("agent_task_failed", agent="test", error=str(test_err))
+                result["test"] = {"error": str(test_err)}
+        elif wants_test and not evaluation_allows_test:
+            result["test"] = {
+                "skipped": True,
+                "reason": "Evaluation recommended revision — test generation deferred.",
+            }
+            result.setdefault("agents_skipped", [])
+            if isinstance(result["agents_skipped"], list):
+                result["agents_skipped"].append("TEST")
+
+        # Track which agents actually ran
+        result["agents_used"] = [decision.primary_action.value] + [
+            a.value for a in decision.secondary_actions
+        ] + [a.value for a in decision.parallel_agents]
+        # Deduplicate
+        result["agents_used"] = list(dict.fromkeys(result["agents_used"]))
+
+        # Provide a top-level answer from the primary agent result
+        if "explain" in result and isinstance(result["explain"], dict):
+            result["answer"] = result["explain"].get("answer", "")
+            result["citations"] = result["explain"].get("citations", [])
+            result["confidence"] = result["explain"].get("confidence", "medium")
+        elif "generate" in result and isinstance(result["generate"], dict):
+            result["answer"] = result["generate"].get("plan", "Code generation completed.")
+            result["confidence"] = "high"
         else:
             result.setdefault("answer", "Request processed.")
             result.setdefault("confidence", "medium")

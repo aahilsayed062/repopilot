@@ -544,6 +544,9 @@
         if (text.startsWith('/generate ')) {
             addMessage('user', text);
             vscode.postMessage({ type: 'GENERATE', request: text.substring(10) });
+        } else if (text.startsWith('/refine ')) {
+            addMessage('user', text);
+            vscode.postMessage({ type: 'REFINE', request: text.substring(8) });
         } else {
             addMessage('user', text);
             vscode.postMessage({ type: 'ASK', question: text });

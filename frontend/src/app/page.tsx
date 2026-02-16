@@ -50,6 +50,52 @@ interface FileDiff {
   diff: string;
 }
 
+interface EvaluationReview {
+  provider: string;
+  score: number;
+  issues: string[];
+  feedback: string;
+  suggested_changes: string[];
+}
+
+interface EvaluationController {
+  decision: string;
+  reasoning: string;
+  final_score: number;
+  confidence: number;
+  merged_issues: string[];
+  priority_fixes: string[];
+  improved_code_by_file: Array<{ file_path: string; code: string }>;
+}
+
+interface EvaluationResult {
+  enabled: boolean;
+  critic?: EvaluationReview;
+  defender?: EvaluationReview;
+  controller: EvaluationController;
+}
+
+interface ImpactFile {
+  file_path: string;
+  reason: string;
+}
+
+interface ImpactReport {
+  directly_changed: string[];
+  indirectly_affected: ImpactFile[];
+  risk_level: string;
+  risks: string[];
+  recommendations: string[];
+}
+
+interface RoutingInfo {
+  primary_action: string;
+  secondary_actions: string[];
+  parallel_agents: string[];
+  confidence: number;
+  reasoning: string;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -60,6 +106,10 @@ interface Message {
   diffs?: FileDiff[];
   paste_instructions?: string[];
   tests?: string;
+  evaluation?: EvaluationResult;
+  impact?: ImpactReport;
+  routingInfo?: RoutingInfo;
+  agentsUsed?: string[];
 }
 
 interface RepoStats {
@@ -376,6 +426,161 @@ const PasteGuide = ({ instructions }: PasteGuideProps) => (
     </div>
   </div>
 );
+
+// Evaluation Display Component (Feature 3)
+const EvaluationDisplay = ({ evaluation }: { evaluation: EvaluationResult }) => {
+  if (!evaluation.enabled) return null;
+
+  const ctrl = evaluation.controller;
+  const decisionColors: Record<string, string> = {
+    ACCEPT_ORIGINAL: '#10b981',
+    MERGE_FEEDBACK: '#f59e0b',
+    REQUEST_REVISION: '#ef4444',
+  };
+  const decisionLabels: Record<string, string> = {
+    ACCEPT_ORIGINAL: '✅ Accepted',
+    MERGE_FEEDBACK: '🔀 Merge Feedback',
+    REQUEST_REVISION: '🔄 Revision Needed',
+  };
+
+  return (
+    <div style={{
+      marginTop: '12px',
+      padding: '12px 16px',
+      borderRadius: '10px',
+      border: '1px solid rgba(255,255,255,0.08)',
+      background: 'rgba(255,255,255,0.03)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+        <Activity size={14} />
+        <strong style={{ fontSize: '13px' }}>LLM Evaluation</strong>
+        <span style={{
+          fontSize: '11px',
+          padding: '2px 8px',
+          borderRadius: '9999px',
+          background: decisionColors[ctrl.decision] || '#6b7280',
+          color: '#fff',
+          fontWeight: 600,
+        }}>
+          {decisionLabels[ctrl.decision] || ctrl.decision}
+        </span>
+        <span style={{ fontSize: '11px', color: '#9ca3af', marginLeft: 'auto' }}>
+          Score: {ctrl.final_score}/10 · Confidence: {Math.round(ctrl.confidence * 100)}%
+        </span>
+      </div>
+
+      {ctrl.reasoning && (
+        <p style={{ fontSize: '12px', color: '#d1d5db', margin: '4px 0 8px' }}>{ctrl.reasoning}</p>
+      )}
+
+      {/* Reviewer scores */}
+      <div style={{ display: 'flex', gap: '16px', fontSize: '12px', marginBottom: '8px' }}>
+        {evaluation.critic && (
+          <span style={{ color: '#93c5fd' }}>
+            🔍 Critic: {evaluation.critic.score}/10
+          </span>
+        )}
+        {evaluation.defender && (
+          <span style={{ color: '#a5b4fc' }}>
+            🛡️ Defender: {evaluation.defender.score}/10
+          </span>
+        )}
+      </div>
+
+      {ctrl.priority_fixes.length > 0 && (
+        <div style={{ fontSize: '12px', color: '#fbbf24' }}>
+          <strong>Priority Fixes:</strong>
+          <ul style={{ margin: '4px 0', paddingLeft: '16px' }}>
+            {ctrl.priority_fixes.slice(0, 3).map((fix, i) => (
+              <li key={i}>{fix}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Impact Display Component (Feature 4)
+const ImpactDisplay = ({ impact }: { impact: ImpactReport }) => {
+  const riskColors: Record<string, string> = {
+    LOW: '#10b981', MEDIUM: '#f59e0b', HIGH: '#f97316', CRITICAL: '#ef4444',
+  };
+  const riskEmoji: Record<string, string> = {
+    LOW: '🟢', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴',
+  };
+
+  return (
+    <div style={{
+      marginTop: '12px',
+      padding: '12px 16px',
+      borderRadius: '10px',
+      border: `1px solid ${riskColors[impact.risk_level] || '#6b7280'}33`,
+      background: 'rgba(255,255,255,0.03)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+        <span>🛡️</span>
+        <strong style={{ fontSize: '13px' }}>Impact Analysis</strong>
+        <span style={{
+          fontSize: '11px',
+          padding: '2px 8px',
+          borderRadius: '9999px',
+          background: riskColors[impact.risk_level] || '#6b7280',
+          color: '#fff',
+          fontWeight: 600,
+        }}>
+          {riskEmoji[impact.risk_level]} {impact.risk_level}
+        </span>
+      </div>
+
+      {impact.indirectly_affected.length > 0 && (
+        <div style={{ fontSize: '12px', marginBottom: '6px' }}>
+          <span style={{ color: '#9ca3af' }}>Affected files: </span>
+          {impact.indirectly_affected.map((f, i) => (
+            <code key={i} style={{ fontSize: '11px', margin: '0 2px', color: '#93c5fd' }}>{f.file_path}</code>
+          ))}
+        </div>
+      )}
+
+      {impact.risks.length > 0 && (
+        <div style={{ fontSize: '12px', color: '#fca5a5', marginBottom: '4px' }}>
+          {impact.risks.slice(0, 3).map((r, i) => (
+            <div key={i}>⚠️ {r}</div>
+          ))}
+        </div>
+      )}
+
+      {impact.recommendations.length > 0 && (
+        <div style={{ fontSize: '12px', color: '#86efac' }}>
+          {impact.recommendations.slice(0, 2).map((r, i) => (
+            <div key={i}>💡 {r}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Routing Info Badge
+const RoutingBadge = ({ agentsUsed }: { agentsUsed: string[] }) => {
+  if (!agentsUsed || agentsUsed.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '6px' }}>
+      {agentsUsed.map((agent, i) => (
+        <span key={i} style={{
+          fontSize: '10px',
+          padding: '1px 6px',
+          borderRadius: '4px',
+          background: 'rgba(99, 102, 241, 0.15)',
+          color: '#a5b4fc',
+          border: '1px solid rgba(99, 102, 241, 0.2)',
+        }}>
+          {agent}
+        </span>
+      ))}
+    </div>
+  );
+};
 
 // ============================================
 // MAIN COMPONENT
@@ -750,55 +955,143 @@ export default function Home() {
     setIsChatLoading(true);
 
     try {
-      if (currentInput.startsWith("/generate ")) {
-        const request = currentInput.replace("/generate ", "");
-        const chatHistory = getRecentChatHistory(messageSnapshot, 5);
-        const res = await fetch(apiUrl("/chat/generate"), {
+      const chatHistory = getRecentChatHistory(messageSnapshot, 5);
+      const contextFileHints = getContextFileHints(messageSnapshot, 5, 4);
+
+      // ── /refine command ──────────────────────────────────────
+      if (currentInput.startsWith("/refine ")) {
+        const request = currentInput.replace("/refine ", "");
+        const res = await fetch(apiUrl("/chat/refine"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ repo_id: repoId, request, chat_history: chatHistory }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Refinement failed");
 
-        if (!res.ok) throw new Error(data.detail || "Generation failed");
+        const iterSummary = (data.iteration_log || [])
+          .map((it: any) => `**Iteration ${it.iteration}:** ${it.tests_passed ? '✅ Passed' : '❌ Failed'} — ${it.refinement_action || 'N/A'}`)
+          .join('\n');
 
         setMessages(prev => [...prev, {
           role: "assistant",
-          content: data.plan || "Generated changes based on your request:",
-          diffs: data.diffs,
-          paste_instructions: data.paste_instructions,
-          tests: data.tests,
-          citations: data.citations?.map((c: string) => ({
-            file_path: c,
-            line_range: "",
-            snippet: "",
-            why: "Analysis context"
-          }))
+          content: `## 🔄 Refinement Result\n\n**Success:** ${data.success ? '✅ Yes' : '❌ No'}\n**Iterations:** ${data.total_iterations}/${4}\n\n${iterSummary}\n\n### Final Test Output\n\`\`\`\n${(data.final_test_output || '').slice(0, 1000)}\n\`\`\``,
+          tests: data.final_tests || undefined,
+          diffs: data.final_code ? [{
+            file_path: "refined_code.py",
+            diff: data.final_code,
+            code: data.final_code,
+          }] : undefined,
         }]);
+
+      // ── /impact command ──────────────────────────────────────
+      } else if (currentInput.startsWith("/impact ")) {
+        const filesInput = currentInput.replace("/impact ", "").trim();
+        const changedFiles = filesInput.split(",").map((f: string) => f.trim()).filter(Boolean);
+        const res = await fetch(apiUrl("/chat/impact"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo_id: repoId, changed_files: changedFiles, code_changes: "" }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Impact analysis failed");
+
+        setMessages(prev => [...prev, {
+          role: "assistant",
+          content: "Impact analysis complete.",
+          impact: data as ImpactReport,
+        }]);
+
+      // ── All other messages → /chat/smart (dynamic routing) ──
       } else {
-        const chatHistory = getRecentChatHistory(messageSnapshot, 5);
-        const contextFileHints = getContextFileHints(messageSnapshot, 5, 4);
-        const res = await fetch(apiUrl("/chat/ask"), {
+        // Strip /generate prefix if present (smart router handles intent automatically)
+        const question = currentInput.startsWith("/generate ")
+          ? currentInput.replace("/generate ", "")
+          : currentInput;
+
+        const res = await fetch(apiUrl("/chat/smart"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             repo_id: repoId,
-            question: userMsg.content,
+            question,
             chat_history: chatHistory,
             context_file_hints: contextFileHints,
           }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Request failed");
 
-        if (!res.ok) throw new Error(data.detail || "Query failed");
+        // Parse smart response — it may contain explain + generate + evaluation
+        const generateData = data.generate;
+        const hasDiffs = generateData && Array.isArray(generateData.diffs) && generateData.diffs.length > 0;
 
-        setMessages(prev => [...prev, {
+        // Build the assistant message
+        const assistantMsg: Message = {
           role: "assistant",
-          content: data.answer,
-          citations: data.citations,
+          content: data.answer || "Request processed.",
           confidence: data.confidence,
-          assumptions: data.assumptions
-        }]);
+          citations: data.citations?.map((c: any) =>
+            typeof c === 'string'
+              ? { file_path: c, line_range: "", snippet: "", why: "Context" }
+              : c
+          ),
+          agentsUsed: data.agents_used,
+        };
+
+        // Attach generation data if present
+        if (hasDiffs) {
+          assistantMsg.diffs = generateData.diffs;
+          assistantMsg.plan = generateData.plan;
+          assistantMsg.tests = generateData.tests;
+          assistantMsg.paste_instructions = generateData.paste_instructions;
+          // Use plan as content header if no explain answer
+          if (!data.explain && generateData.plan) {
+            assistantMsg.content = generateData.plan;
+          }
+        }
+
+        // Attach explain citations if present
+        if (data.explain && Array.isArray(data.explain.citations)) {
+          assistantMsg.citations = data.explain.citations;
+          assistantMsg.assumptions = data.explain.assumptions;
+        }
+
+        // Attach evaluation (Feature 3)
+        if (data.evaluation && data.evaluation.enabled !== false) {
+          assistantMsg.evaluation = data.evaluation as EvaluationResult;
+        }
+
+        setMessages(prev => [...prev, assistantMsg]);
+
+        // Auto-run impact analysis for generate results (Feature 4)
+        if (hasDiffs && repoId) {
+          try {
+            const changedFiles = generateData.diffs.map((d: any) => d.file_path);
+            const codeChanges = generateData.diffs
+              .map((d: any) => `--- ${d.file_path} ---\n${d.diff || ''}`)
+              .join('\n');
+            const impactRes = await fetch(apiUrl("/chat/impact"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ repo_id: repoId, changed_files: changedFiles, code_changes: codeChanges }),
+            });
+            if (impactRes.ok) {
+              const impactData = await impactRes.json();
+              // Update the last assistant message with impact data
+              setMessages(prev => {
+                const updated = [...prev];
+                const lastMsg = updated[updated.length - 1];
+                if (lastMsg && lastMsg.role === "assistant") {
+                  updated[updated.length - 1] = { ...lastMsg, impact: impactData as ImpactReport };
+                }
+                return updated;
+              });
+            }
+          } catch {
+            // Impact is non-critical
+          }
+        }
       }
 
     } catch (e: unknown) {
@@ -1059,7 +1352,7 @@ export default function Home() {
             transition={{ delay: 0.4 }}
             className="tip-box"
           >
-            <strong>Pro Tip:</strong> Use <code>/generate</code> followed by a feature request to create code patches.
+            <strong>Pro Tip:</strong> Use <code>/generate</code> to create code, <code>/refine</code> to iteratively test &amp; fix, or <code>/impact file1,file2</code> to analyze risk. Regular questions use smart routing automatically.
           </motion.div>
         </aside>
 
@@ -1190,6 +1483,21 @@ export default function Home() {
                       {/* Citations */}
                       {msg.citations && msg.citations.length > 0 && (
                         <Citations citations={msg.citations} />
+                      )}
+
+                      {/* Evaluation (Feature 3) */}
+                      {msg.evaluation && (
+                        <EvaluationDisplay evaluation={msg.evaluation} />
+                      )}
+
+                      {/* Impact Analysis (Feature 4) */}
+                      {msg.impact && (
+                        <ImpactDisplay impact={msg.impact} />
+                      )}
+
+                      {/* Agents Used (Feature 1) */}
+                      {msg.agentsUsed && msg.agentsUsed.length > 0 && (
+                        <RoutingBadge agentsUsed={msg.agentsUsed} />
                       )}
 
                       {/* Confidence */}

@@ -209,8 +209,13 @@ Return JSON:
         """
         Run pytest in a temporary directory.
         Returns (output_text, passed_bool, failure_lines).
+
+        Uses mkdtemp + manual cleanup to avoid WinError 5 (Access Denied)
+        that occurs with TemporaryDirectory context manager on Windows when
+        subprocess file handles are not yet released.
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = tempfile.mkdtemp(prefix="repopilot_test_")
+        try:
             # Write the generated code
             code_file = os.path.join(tmpdir, "solution.py")
             test_file = os.path.join(tmpdir, "test_solution.py")
@@ -265,6 +270,20 @@ Return JSON:
                 )
             except Exception as e:
                 return f"Error running tests: {e}", False, [str(e)]
+        finally:
+            # Clean up temp directory; on Windows, retry if files are still locked
+            import shutil
+            import time as _time
+            for attempt in range(3):
+                try:
+                    shutil.rmtree(tmpdir, ignore_errors=False)
+                    break
+                except (PermissionError, OSError):
+                    if attempt < 2:
+                        _time.sleep(0.5)
+                    else:
+                        # Last resort: ignore cleanup errors
+                        shutil.rmtree(tmpdir, ignore_errors=True)
 
     async def _refine(
         self, code: str, tests: str, failure_output: str

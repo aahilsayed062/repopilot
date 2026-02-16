@@ -68,7 +68,7 @@ Return JSON:
         ]
         
         try:
-            response = await llm.chat_completion(messages, json_mode=True)
+            response = await llm.chat_completion(messages, json_mode=True, provider_override="ollama_b")
             data = json.loads(response)
             return RoutingDecision(**data)
         except Exception as e:
