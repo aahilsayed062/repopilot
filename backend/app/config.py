@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: Optional[str] = Field(default=None, validation_alias="GEMINI_API_KEY")
 
-    gemini_embedding_model: str = "models/text-embedding-004"
+    gemini_embedding_model: str = "models/gemini-embedding-001"
     gemini_chat_model: str = "gemini-2.0-flash"
 
     # Ollama (local offline LLM)

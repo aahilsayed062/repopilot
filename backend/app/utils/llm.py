@@ -87,11 +87,22 @@ class LLMService:
             )
 
     def _check_ollama_available(self) -> bool:
-        """Check if Ollama is running and reachable."""
+        """Check if Ollama is running and has at least one required model."""
         try:
             import httpx as _httpx
             resp = _httpx.get(f"{self.ollama_base_url}/api/tags", timeout=3.0)
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False
+            # Verify at least one configured model is actually pulled
+            available = {m["name"] for m in resp.json().get("models", [])}
+            needed = {settings.ollama_model_a, settings.ollama_model_b}
+            # Match by base name (tags list may include :latest suffix)
+            for model in needed:
+                base = model.split(":")[0]
+                if any(a == model or a.startswith(base + ":") for a in available):
+                    return True
+            logger.warning("ollama_no_models", available=list(available), needed=list(needed))
+            return False
         except Exception:
             return False
 
