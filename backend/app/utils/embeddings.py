@@ -33,8 +33,8 @@ GEMINI_SUB_BATCH_DELAY = 1.5
 GEMINI_429_BASE_WAIT = 62.0
 GEMINI_429_MAX_RETRIES = 3
 
-# Ollama - no limits, process everything at once
-OLLAMA_BATCH_SIZE = 50  # texts per API call (Ollama handles large batches fine)
+# Ollama - small batches to avoid timeouts on consumer hardware
+OLLAMA_BATCH_SIZE = 50  # texts per API call (all-minilm is fast enough for 50)
 
 
 class EmbeddingService:
@@ -59,12 +59,17 @@ class EmbeddingService:
         # Priority 1: Ollama (local, fast, no rate limits)
         if self._check_ollama_embed_available():
             self.provider = "ollama"
-            self.dimension = self.OLLAMA_DIM
+            # Auto-detect dimension
+            if "minilm" in self.ollama_embed_model.lower():
+                self.dimension = 384
+            else:
+                self.dimension = self.OLLAMA_DIM
+            
             logger.info(
                 "embeddings_initialized",
                 provider="Ollama",
                 model=self.ollama_embed_model,
-                note="Local embeddings - no rate limits!",
+                note=f"Local embeddings ({self.dimension}d) - no rate limits!",
             )
         # Priority 2: Gemini (free API, but rate-limited)
         elif settings.gemini_api_key:
@@ -138,7 +143,8 @@ class EmbeddingService:
             else:
                 return await asyncio.to_thread(self._get_mock_embeddings, texts)
         except Exception as e:
-            logger.error("embedding_failed", provider=self.provider, error=str(e))
+            error_detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            logger.error("embedding_failed", provider=self.provider, error=error_detail)
             # Fallback chain: try Gemini if Ollama fails, then mock
             if self.provider == "ollama" and settings.gemini_api_key:
                 logger.warning("falling_back_to_gemini_embeddings")
@@ -179,32 +185,61 @@ class EmbeddingService:
         return embeddings
 
     async def _get_ollama_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings from local Ollama. No rate limits, fast."""
+        """Get embeddings from local Ollama. No rate limits, fast.
+        
+        Uses small batches and per-text fallback to handle slow hardware gracefully.
+        """
         all_embeddings: List[List[float]] = []
+        total_batches = (len(texts) + OLLAMA_BATCH_SIZE - 1) // OLLAMA_BATCH_SIZE
 
-        # Process in batches (Ollama can handle large batches locally)
-        for i in range(0, len(texts), OLLAMA_BATCH_SIZE):
-            sub_batch = texts[i:i + OLLAMA_BATCH_SIZE]
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+            for i in range(0, len(texts), OLLAMA_BATCH_SIZE):
+                sub_batch = texts[i:i + OLLAMA_BATCH_SIZE]
+                batch_num = (i // OLLAMA_BATCH_SIZE) + 1
 
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
-                response = await client.post(
-                    f"{self.ollama_base_url}/api/embed",
-                    json={
-                        "model": self.ollama_embed_model,
-                        "input": sub_batch,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-                all_embeddings.extend(data["embeddings"])
+                try:
+                    response = await client.post(
+                        f"{self.ollama_base_url}/api/embed",
+                        json={
+                            "model": self.ollama_embed_model,
+                            "input": sub_batch,
+                        },
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    all_embeddings.extend(data["embeddings"])
 
-            batch_num = (i // OLLAMA_BATCH_SIZE) + 1
-            total = (len(texts) + OLLAMA_BATCH_SIZE - 1) // OLLAMA_BATCH_SIZE
-            logger.debug(
-                "ollama_embed_batch_ok",
-                batch=f"{batch_num}/{total}",
-                texts=len(sub_batch),
-            )
+                    logger.debug(
+                        "ollama_embed_batch_ok",
+                        batch=f"{batch_num}/{total_batches}",
+                        texts=len(sub_batch),
+                    )
+                except Exception as batch_err:
+                    # Batch failed — fall back to embedding one text at a time
+                    logger.warning(
+                        "ollama_batch_failed_trying_individual",
+                        batch=f"{batch_num}/{total_batches}",
+                        error=f"{type(batch_err).__name__}: {batch_err}",
+                    )
+                    for j, text in enumerate(sub_batch):
+                        try:
+                            resp = await client.post(
+                                f"{self.ollama_base_url}/api/embed",
+                                json={
+                                    "model": self.ollama_embed_model,
+                                    "input": [text],
+                                },
+                            )
+                            resp.raise_for_status()
+                            data = resp.json()
+                            all_embeddings.extend(data["embeddings"])
+                        except Exception as single_err:
+                            logger.error(
+                                "ollama_single_embed_failed",
+                                text_index=i + j,
+                                error=f"{type(single_err).__name__}: {single_err}",
+                            )
+                            raise
 
         return all_embeddings
 

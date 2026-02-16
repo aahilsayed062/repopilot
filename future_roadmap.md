@@ -1,5 +1,5 @@
 # RepoPilot — Future Roadmap & Setup Guide
-> **Last Updated:** 2026-02-16 | **Branch:** `main`
+> **Last Updated:** 2026-02-16 (Evening) | **Branch:** `main`
 
 > [!IMPORTANT]
 > **Prerequisites: Install Ollama & Pull Models**
@@ -8,7 +8,7 @@
 > ollama pull qwen2.5-coder:3b
 > ollama pull qwen2.5-coder:1.5b
 > ```
-
+analyse 
 ---
 
 ## 📊 Current Feature Status
@@ -17,8 +17,22 @@
 |---|---------|--------|-----------|
 | 1 | Dynamic Multi-Agent Routing | ✅ **DONE** | `agent_router.py`, `chat.py /smart` |
 | 2 | Iterative PyTest-Driven Refinement | ✅ **DONE** | `refinement_loop.py`, `chat.py /refine` |
-| 3 | LLM vs LLM Evaluation Layer | 🔴 **TODO** | `evaluator.py` (create) |
+| 3 | LLM vs LLM Evaluation Layer | 🟡 **PARTIAL** | `evaluator.py` ✅ created, endpoint & pipeline wiring ❌ |
 | 4 | Risk & Change Impact Analysis | 🔴 **TODO** | `impact_analyzer.py` (create) |
+
+### What's Missing for Feature 3 (LLM Evaluation)?
+
+The `evaluator.py` service is **fully implemented** with:
+- ✅ `CodeEvaluator` class with dual-model review (Model A: logic, Model B: QA)
+- ✅ Parallel execution via `asyncio.gather`
+- ✅ Weighted score merging (60% Logic, 40% QA)
+- ✅ `EvaluationResult` Pydantic model
+
+**Still missing:**
+- ❌ No `/chat/evaluate` endpoint in `chat.py`
+- ❌ Not wired into the `/smart` pipeline (should run after GENERATE, before TEST)
+- ❌ No VS Code extension handler for evaluation results
+- ❌ No UI display for evaluation scores/feedback
 
 ---
 
@@ -121,78 +135,77 @@ User Query → Extension → Backend → LLM Service (llm.py)
 
 ---
 
-## 🛣️ Feature 3: LLM vs LLM Evaluation Layer (🔴 Next)
+## 🛣️ Feature 3: LLM vs LLM Evaluation Layer (🟡 Partial)
 
 **What it does:** After code generation, two LLM agents independently review the code. A controller decides which version to accept or how to merge improvements.
 
-### Implementation Plan
+### ✅ What's Done
+- `evaluator.py` — Fully implemented `CodeEvaluator` class
+- Dual-model prompts (Agent A: logic/correctness, Agent B: QA/edge-cases)
+- Parallel review via `asyncio.gather` with `provider_override`
+- Weighted score merging: 60% Logic (Model A) + 40% QA (Model B)
+- Graceful fallback if one model fails
 
-**Step 1: Create `backend/app/services/evaluator.py`**
-```python
-class CodeEvaluator:
-    """Two-model code review system."""
-    
-    REVIEW_PROMPT = """Review this generated code:
-    - Correctness: Does it do what was asked?
-    - Edge cases: Are there unhandled edge cases?
-    - Repo alignment: Does it match the codebase style?
-    
-    Score each 1-10 and explain issues."""
-    
-    async def evaluate(self, code: str, context: str) -> dict:
-        # Run both models in parallel
-        review_a, review_b = await asyncio.gather(
-           # `_review_with_model_a(code)` → Uses `provider_override="ollama"` (Model A: qwen2.5-coder:3b)
-            llm.chat_completion(messages, provider_override="ollama_b"), # Model B (1.5b)
-        )
-        # Controller merges feedback
-        return self._merge_reviews(review_a, review_b)
-```
+### ❌ Remaining Work
 
-**Step 2: Add `/chat/evaluate` endpoint**
+**Step 1: Add `/chat/evaluate` endpoint in `chat.py`**
 ```python
 @router.post("/evaluate")
 async def evaluate_code(request):
+    from app.services.evaluator import evaluator
     result = await evaluator.evaluate(code, context)
-    return result
+    return result.model_dump()
 ```
 
-**Step 3: Wire into `/smart` routing** — After GENERATE, before TEST, run evaluation
+**Step 2: Wire into `/smart` routing** — After GENERATE, before TEST, run evaluation
 
-**Estimated effort:** ~2-3 hours
+**Step 3: VS Code extension** — Add handler and UI for evaluation scores
+
+**Estimated effort:** ~1-2 hours (service is done, just wiring)
 
 ---
 
-## 🛣️ Feature 4: Risk & Change Impact Analysis (🔴 After Feature 3)
+## 🛣️ Feature 4: Risk & Change Impact Analysis (🔴 TODO — Can be done independently!)
 
 **What it does:** After code changes are finalized, the system reports which files are directly changed, which are indirectly affected, and what risks are introduced.
+
+> [!TIP]
+> **This feature is independent of Feature 3.** It can be implemented first since it hooks into the GENERATE pipeline at a different stage (post-finalization, not pre-test). The VS Code extension already has CSS styles for impact reports (`chat.css` lines 1097-1167).
 
 ### Implementation Plan
 
 **Step 1: Create `backend/app/services/impact_analyzer.py`**
 ```python
 class ImpactAnalyzer:
-    """Analyzes change impact using RAG retrieval."""
+    """Analyzes change impact using RAG retrieval + LLM reasoning."""
     
-    async def analyze(self, changed_files: list, repo_id: str) -> dict:
-        # 1. For each changed file, find files that import it
-        # 2. Use retriever to find related code chunks
-        # 3. Ask LLM to assess risk level
+    async def analyze(self, code_changes: str, changed_files: list, repo_id: str) -> dict:
+        # 1. For each changed file, use retriever to find files that import/reference it
+        # 2. Use repo_manager to get related file contents
+        # 3. Ask LLM to assess risk level based on repository context
         # 4. Return structured report
         return {
             "directly_changed": [...],
             "indirectly_affected": [...],
-            "risk_level": "MEDIUM",
+            "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
             "risks": ["Breaking change in public API", ...],
             "recommendations": [...]
         }
 ```
 
-**Step 2: Add `/chat/impact` endpoint**
+**Step 2: Add `/chat/impact` endpoint in `chat.py`**
 
-**Step 3: Show impact report in extension after code generation**
+**Step 3: Wire into `/smart` pipeline** — Run impact analysis after code generation completes
+
+**Step 4: VS Code extension** — Add handler + use existing CSS classes (`.impact-severity`, `.impact-files`, `.impact-risks`) for UI display
 
 **Estimated effort:** ~2-3 hours
+
+### Pre-existing Extension CSS (ready to use)
+The extension already has styled components for:
+- `.impact-severity` badges (critical/high/moderate/low with color coding)
+- `.impact-files` file list with icons
+- `.impact-risks` risk item display
 
 ---
 

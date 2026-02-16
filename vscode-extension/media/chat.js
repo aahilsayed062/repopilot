@@ -146,7 +146,10 @@
 
     // ── Add Message ───────────────────────────────────────────
     function addMessage(role, content, citations, buttons) {
-        removeThinking();
+        // Only remove thinking if this is a real message (not empty streaming placeholder)
+        if (content && content.trim()) {
+            removeThinking();
+        }
         showChat();
 
         const msgDiv = document.createElement('div');

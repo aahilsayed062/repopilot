@@ -51,8 +51,8 @@ class Answerer:
     Generates structured answers grounded in retrieved repository chunks.
     """
 
-    MAX_CONTENT_LENGTH = 1500
-    MAX_CITATIONS = 4
+    MAX_CONTENT_LENGTH = 800
+    MAX_CITATIONS = 3
 
     SYSTEM_PROMPT = """You are RepoPilot, a code assistant that answers questions about repositories.
 
@@ -65,11 +65,7 @@ Always respond with this JSON format:
 {"answer": "your answer here using markdown", "confidence": "high or medium or low", "citations": [{"file_path": "file.py", "line_range": "L1-L50", "why": "reason"}]}
 """
 
-    SYSTEM_PROMPT_STREAM = """You are RepoPilot, a code assistant.
-Answer the question using ONLY the provided context.
-If you use code from the context, cite it like [S1], [S2].
-Do not use JSON. Write directly in Markdown.
-"""
+    SYSTEM_PROMPT_STREAM = """Answer using ONLY the provided code context. Cite sources as [S1], [S2]. Use Markdown."""
 
     TEMPLATE_LEAK_MARKERS = (
         "markdown with sections",

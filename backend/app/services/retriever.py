@@ -19,8 +19,8 @@ class Retriever:
     Retrieves relevant chunks for a query using semantic search.
     """
     
-    def __init__(self, default_k: int = 4):
-        # Reduced from 8 to 4 to stay within Groq's 12k TPM limit
+    def __init__(self, default_k: int = 3):
+        # Reduced to 3 for faster CPU inference (less context = faster LLM)
         self.default_k = default_k
 
     @staticmethod
@@ -48,7 +48,7 @@ class Retriever:
             return []
             
         # Search
-        search_k = max(k * 5, 20)
+        search_k = max(k * 3, 12)
         results = collection.query(
             query_embeddings=query_embeddings,
             n_results=search_k,

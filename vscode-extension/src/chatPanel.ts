@@ -29,8 +29,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     constructor(private readonly _context: vscode.ExtensionContext, private statusBar?: any) {
         this._extensionUri = _context.extensionUri;
-        // Load history
-        this._history = loadChatHistory();
+        // Always start fresh — don't replay stale history
+        this._history = [];
     }
 
     /**
@@ -360,29 +360,61 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                     targetUri = vscode.Uri.joinPath(rootUri, cleanPath);
                 }
 
-                // If full code is provided, write it (Create/Overwrite)
                 const content = diff.code || diff.content;
                 if (content) {
-                    await vscode.workspace.fs.writeFile(targetUri, Buffer.from(content, 'utf-8'));
-                } else {
-                    // IF no code, maybe try to apply patch? For now just warn if file doesn't exist
+                    // Check if file already exists
+                    let fileExists = false;
                     try {
                         await vscode.workspace.fs.stat(targetUri);
+                        fileExists = true;
                     } catch {
-                        // File doesn't exist and no content to write
+                        // File doesn't exist
+                    }
+
+                    if (fileExists) {
+                        // Show diff view so user can review and merge (don't overwrite)
+                        const generatedUri = vscode.Uri.parse(
+                            'untitled:' + cleanPath + '.generated'
+                        );
+                        const generatedDoc = await vscode.workspace.openTextDocument(generatedUri);
+                        const edit = new vscode.WorkspaceEdit();
+                        edit.insert(generatedUri, new vscode.Position(0, 0), content);
+                        await vscode.workspace.applyEdit(edit);
+                        await vscode.commands.executeCommand(
+                            'vscode.diff',
+                            targetUri,
+                            generatedUri,
+                            `${cleanPath} ↔ Generated`
+                        );
+                        openedCount++;
+                    } else {
+                        // New file — create it directly
+                        await vscode.workspace.fs.writeFile(targetUri, Buffer.from(content, 'utf-8'));
+                        const doc = await vscode.workspace.openTextDocument(targetUri);
+                        await vscode.window.showTextDocument(doc, { preview: false });
+                        openedCount++;
+                    }
+                } else {
+                    // No code content — just open the existing file if it exists
+                    try {
+                        await vscode.workspace.fs.stat(targetUri);
+                        const doc = await vscode.workspace.openTextDocument(targetUri);
+                        await vscode.window.showTextDocument(doc, { preview: false });
+                        openedCount++;
+                    } catch {
                         this.postMessage({ type: 'ERROR_TOAST', message: `Cannot create ${cleanPath}: No content provided.` });
-                        continue;
                     }
                 }
-
-                // Open the file
-                const doc = await vscode.workspace.openTextDocument(targetUri);
-                await vscode.window.showTextDocument(doc, { preview: false });
-                openedCount++;
             }
 
             if (openedCount > 0) {
-                vscode.window.showInformationMessage(`Applied changes to ${openedCount} files.`);
+                const hasExisting = this._lastGeneratedDiffs.some((d: any) => {
+                    try { return require('fs').existsSync(d.file_path); } catch { return false; }
+                });
+                const msg = hasExisting
+                    ? `Opened diff view for ${openedCount} file(s). Review and merge changes manually.`
+                    : `Applied changes to ${openedCount} file(s).`;
+                vscode.window.showInformationMessage(msg);
             }
 
         } catch (error) {
@@ -502,24 +534,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         this.statusBar?.update('loading');
 
         try {
-            // Try to get git remote origin first
-            let repoUrl = workspacePath;
-            try {
-                const gitExtension = vscode.extensions.getExtension('vscode.git');
-                if (gitExtension) {
-                    const git = gitExtension.exports.getAPI(1);
-                    const repo = git.repositories[0];
-                    if (repo) {
-                        const remotes = repo.state.remotes;
-                        const origin = remotes.find((r: any) => r.name === 'origin');
-                        if (origin && origin.fetchUrl) {
-                            repoUrl = origin.fetchUrl;
-                        }
-                    }
-                }
-            } catch {
-                // Fallback to local path
-            }
+            // Always use local workspace path (no GitHub cloning)
+            const repoUrl = workspacePath;
 
             const result = await api.loadAndIndexRepo(repoUrl, (status) => {
                 if (status.includes('Indexing')) {

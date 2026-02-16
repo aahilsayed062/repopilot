@@ -169,18 +169,10 @@ async function initializeExtension(): Promise<void> {
         }
     }
 
-    // Check if auto-index is enabled
-    const config = vscode.workspace.getConfiguration('repopilot');
-    const autoIndex = config.get<boolean>('autoIndexOnOpen', true);
-
-    if (!autoIndex) {
-        chatPanelProvider.updateStatus('not_indexed');
-        statusBar.update('not_indexed');
-        return;
-    }
-
-    // Auto-index the workspace
-    await autoIndexWorkspace(workspacePath);
+    // Don't auto-index — let user click "Index Workspace" when ready
+    // This avoids race conditions with history replay and incomplete indexing
+    chatPanelProvider.updateStatus('not_indexed');
+    statusBar.update('not_indexed');
 }
 
 /**
@@ -192,24 +184,9 @@ async function autoIndexWorkspace(workspacePath: string): Promise<void> {
     statusBar.update('loading');
 
     try {
-        // Try to get git remote origin
-        let repoUrl = workspacePath;
-        try {
-            const gitExtension = vscode.extensions.getExtension('vscode.git');
-            if (gitExtension && gitExtension.isActive) {
-                const git = gitExtension.exports.getAPI(1);
-                if (git.repositories.length > 0) {
-                    const repo = git.repositories[0];
-                    const remotes = repo.state.remotes;
-                    const origin = remotes.find((r: any) => r.name === 'origin');
-                    if (origin && origin.fetchUrl) {
-                        repoUrl = origin.fetchUrl;
-                    }
-                }
-            }
-        } catch {
-            // Fallback to local path
-        }
+        // Always use local workspace path — no GitHub cloning needed
+        // The codebase is already on disk, cloning wastes ~30s
+        const repoUrl = workspacePath;
 
         // Load and index -- update status bar with progress
         const result = await api.loadAndIndexRepo(repoUrl, (progressMsg) => {

@@ -144,8 +144,9 @@ async function fetchJson<T>(
             throw error;
         }
         // Network error
+        const msg = error instanceof Error ? error.message : String(error);
         throw new ApiError(
-            `Cannot connect to RepoPilot backend at ${baseUrl}. Is it running?`,
+            `Connection failed (${msg}) to ${baseUrl}. Is backend running?`,
             undefined,
             true
         );
@@ -219,7 +220,7 @@ export async function getRepoStatus(
         include_files: includeFiles.toString(),
     });
 
-    return fetchJson<RepoStatusResponse>(`/repo/status?${params.toString()}`);
+    return fetchJson<RepoStatusResponse>(`/repo/status?${params.toString()}`, {}, 60000);
 }
 
 /**
