@@ -49,6 +49,8 @@ class EmbeddingService:
     OLLAMA_DIM_NOMIC = 768  # nomic-embed-text
     GEMINI_DIM = 768
     OPENAI_DIM = 1536
+    OLLAMA_MIN_RETRY_CHARS = 256
+    OLLAMA_MAX_RETRY_ATTEMPTS = 6
 
     def __init__(self):
         self.openai_client = None
@@ -227,26 +229,115 @@ class EmbeddingService:
                         error=f"{type(batch_err).__name__}: {batch_err}",
                     )
                     for j, text in enumerate(sub_batch):
-                        try:
-                            resp = await client.post(
-                                f"{self.ollama_base_url}/api/embed",
-                                json={
-                                    "model": self.ollama_embed_model,
-                                    "input": [text],
-                                },
-                            )
-                            resp.raise_for_status()
-                            data = resp.json()
-                            all_embeddings.extend(data["embeddings"])
-                        except Exception as single_err:
-                            logger.error(
-                                "ollama_single_embed_failed",
-                                text_index=i + j,
-                                error=f"{type(single_err).__name__}: {single_err}",
-                            )
-                            raise
+                        embedding = await self._embed_single_ollama_with_retry(
+                            client=client,
+                            text=text,
+                            text_index=i + j,
+                        )
+                        all_embeddings.append(embedding)
 
         return all_embeddings
+
+    @staticmethod
+    def _is_context_length_error(error_text: str) -> bool:
+        text = (error_text or "").lower()
+        patterns = (
+            "input length exceeds the context length",
+            "context length",
+            "token limit",
+            "too many tokens",
+            "input too long",
+        )
+        return any(p in text for p in patterns)
+
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int) -> str:
+        """Trim while preserving both beginning and end for better signal retention."""
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 32:
+            return text[:max_chars]
+        head_chars = int(max_chars * 0.75)
+        tail_chars = max_chars - head_chars
+        return (
+            text[:head_chars]
+            + "\n... [TRUNCATED FOR EMBEDDING] ...\n"
+            + text[-tail_chars:]
+        )
+
+    async def _embed_single_ollama_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        text: str,
+        text_index: int,
+    ) -> List[float]:
+        """
+        Embed a single text with context-length-aware retries.
+
+        If Ollama rejects long input (HTTP 400 context length), this method
+        progressively truncates input and retries. As a last resort it returns
+        a deterministic mock vector so indexing can proceed without provider
+        fallback storms.
+        """
+        candidate = text
+
+        for attempt in range(1, self.OLLAMA_MAX_RETRY_ATTEMPTS + 1):
+            try:
+                resp = await client.post(
+                    f"{self.ollama_base_url}/api/embed",
+                    json={
+                        "model": self.ollama_embed_model,
+                        "input": [candidate],
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                embeddings = data.get("embeddings") or []
+                if not embeddings:
+                    raise RuntimeError("Ollama embed response missing embeddings")
+                return embeddings[0]
+            except Exception as single_err:
+                error_text = f"{type(single_err).__name__}: {single_err}"
+                if isinstance(single_err, httpx.HTTPStatusError) and single_err.response is not None:
+                    try:
+                        error_text += f" body={single_err.response.text}"
+                    except Exception:
+                        pass
+
+                # For context-length overflows, truncate and retry instead of failing whole batch.
+                if self._is_context_length_error(error_text):
+                    if len(candidate) <= self.OLLAMA_MIN_RETRY_CHARS:
+                        logger.warning(
+                            "ollama_single_embed_context_too_long_after_truncation",
+                            text_index=text_index,
+                            final_chars=len(candidate),
+                        )
+                        break
+
+                    new_max = max(self.OLLAMA_MIN_RETRY_CHARS, int(len(candidate) * 0.65))
+                    candidate = self._truncate_text(candidate, new_max)
+                    logger.warning(
+                        "ollama_single_embed_retry_truncated",
+                        text_index=text_index,
+                        attempt=attempt,
+                        retry_chars=len(candidate),
+                    )
+                    continue
+
+                logger.error(
+                    "ollama_single_embed_failed",
+                    text_index=text_index,
+                    error=error_text,
+                )
+                raise
+
+        logger.warning(
+            "ollama_single_embed_fallback_mock",
+            text_index=text_index,
+            original_chars=len(text),
+        )
+        # Last-resort local fallback for this text only.
+        return self._get_mock_embeddings([text])[0]
 
     @staticmethod
     def _parse_retry_delay(error_msg: str) -> float:

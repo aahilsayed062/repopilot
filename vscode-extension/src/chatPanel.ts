@@ -302,7 +302,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             content += smartResult.answer || '';
 
             // If generation results exist, format them
-            if (smartResult.generate && typeof smartResult.generate === 'object' && !smartResult.generate.error) {
+            if (smartResult.generate && typeof smartResult.generate === 'object' && !('error' in smartResult.generate)) {
                 const genData = smartResult.generate;
                 if (genData.plan) {
                     content += `\n\n### 📋 Plan\n${genData.plan}`;
