@@ -16,6 +16,8 @@ import {
     ChatResponse,
     GenerationRequest,
     GenerationResponse,
+    ImpactAnalysisRequest,
+    ImpactAnalysisResponse,
     PyTestRequest,
     PyTestResponse,
 } from './types';
@@ -270,6 +272,26 @@ export async function generateCode(
         method: 'POST',
         body: JSON.stringify(body),
     }, 120000); // 2 min -- LLM can be slow
+}
+
+/**
+ * Analyze impact of code changes (Feature 4)
+ */
+export async function analyzeImpact(
+    repoId: string,
+    changedFiles: string[],
+    codeChanges: string
+): Promise<ImpactAnalysisResponse> {
+    const body: ImpactAnalysisRequest = {
+        repo_id: repoId,
+        changed_files: changedFiles,
+        code_changes: codeChanges,
+    };
+
+    return fetchJson<ImpactAnalysisResponse>('/chat/impact', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }, 60000); // 1 min
 }
 
 /**

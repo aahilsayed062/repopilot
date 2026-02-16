@@ -13,7 +13,7 @@ import {
     Citation,
 } from './types';
 import * as api from './apiClient';
-import { formatChatResponse, formatGenerationResponse, formatSafeRefusal } from './responseFormatter';
+import { formatChatResponse, formatGenerationResponse, formatSafeRefusal, formatImpactReport } from './responseFormatter';
 import { openCitedFile, parseLineRange } from './fileOpener';
 import { getStoredState, saveRepoInfo, getStoredRepoId, loadChatHistory, saveChatHistory } from './storage';
 
@@ -26,6 +26,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     private _repoId?: string;
     private _repoName?: string;
     private _history: ExtensionToWebviewMessage[] = [];
+    private _abortController?: AbortController;
 
     constructor(private readonly _context: vscode.ExtensionContext, private statusBar?: any) {
         this._extensionUri = _context.extensionUri;
@@ -201,6 +202,22 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             case 'REQUEST_FILE_CONTEXT':
                 await this._handleFileContextRequest((message as any).files);
                 break;
+
+            case 'CANCEL_REQUEST':
+                this._handleCancelRequest();
+                break;
+
+            case 'ACCEPT_FILE':
+                await this._handleAcceptFile((message as any).file_path);
+                break;
+
+            case 'REJECT_FILE':
+                this._handleRejectFile((message as any).file_path);
+                break;
+
+            case 'ACCEPT_ALL':
+                await this._handleAcceptAll();
+                break;
         }
     }
 
@@ -217,6 +234,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         }
 
         this.postMessage({ type: 'LOADING', loading: true });
+        this._abortController = new AbortController();
 
         try {
             // Include any pending file context
@@ -289,9 +307,17 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         }
 
         this.postMessage({ type: 'LOADING', loading: true });
+        this._abortController = new AbortController();
 
         try {
-            const response = await api.generateCode(this._repoId, request);
+            // Include any pending @file context so LLM sees existing file content
+            let requestWithContext = request;
+            if (this._pendingFileContext) {
+                requestWithContext = request + '\n\n[Existing File Content]\n' + this._pendingFileContext;
+                this._pendingFileContext = '';
+            }
+
+            const response = await api.generateCode(this._repoId, requestWithContext);
             const formatted = formatGenerationResponse(response);
 
             // Store diffs and tests
@@ -300,7 +326,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
             const buttons: { label: string; action: string }[] = [];
             if (this._lastGeneratedDiffs.length > 0) {
-                buttons.push({ label: '⚡ Apply Changes', action: 'APPLY_CHANGES' });
+                buttons.push({ label: '✅ Accept All', action: 'ACCEPT_ALL' });
             }
             if (this._lastGeneratedTests && this._lastGeneratedTests.trim().length > 0) {
                 buttons.push({ label: '🧪 Run Tests', action: 'RUN_TESTS' });
@@ -312,6 +338,26 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 content: formatted,
                 buttons: buttons.length > 0 ? buttons : undefined
             });
+
+            // Feature 4: Auto-run Impact Analysis (compact inline)
+            if (this._lastGeneratedDiffs.length > 0 && this._repoId) {
+                try {
+                    const changedFiles = this._lastGeneratedDiffs.map((d: any) => d.file_path);
+                    const codeChanges = this._lastGeneratedDiffs
+                        .map((d: any) => `--- ${d.file_path} ---\n${d.diff || ''}`)
+                        .join('\n');
+                    const impact = await api.analyzeImpact(this._repoId, changedFiles, codeChanges);
+                    const impactFormatted = formatImpactReport(impact);
+                    // Append to the same message (not a separate bubble)
+                    this.postMessage({
+                        type: 'MESSAGE_UPDATE',
+                        content: formatted + '\n\n---\n' + impactFormatted,
+                    });
+                } catch (impactErr) {
+                    // Impact analysis is non-critical — don't block on failure
+                    console.warn('Impact analysis failed (non-critical):', impactErr);
+                }
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
 
@@ -331,7 +377,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * Handle apply changes
+     * Handle apply changes — directly writes files (like Copilot)
      */
     private async _handleApplyChanges(): Promise<void> {
         if (this._lastGeneratedDiffs.length === 0) {
@@ -347,80 +393,139 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const rootUri = workspaceFolders[0].uri;
 
         try {
-            let openedCount = 0;
-            for (const diff of this._lastGeneratedDiffs) {
-                // Resolve path relative to workspace
-                let targetUri: vscode.Uri;
-                // Remove leading slash/backslash if present to ensure proper join
-                const cleanPath = diff.file_path.replace(/^[\/\\]/, '');
+            const applied: string[] = [];
 
-                if (path.isAbsolute(diff.file_path)) {
-                    targetUri = vscode.Uri.file(diff.file_path);
-                } else {
-                    targetUri = vscode.Uri.joinPath(rootUri, cleanPath);
-                }
+            for (const diff of this._lastGeneratedDiffs) {
+                const cleanPath = diff.file_path.replace(/^[\/\\]/, '');
+                const targetUri = path.isAbsolute(diff.file_path)
+                    ? vscode.Uri.file(diff.file_path)
+                    : vscode.Uri.joinPath(rootUri, cleanPath);
 
                 const content = diff.code || diff.content;
-                if (content) {
-                    // Check if file already exists
-                    let fileExists = false;
-                    try {
-                        await vscode.workspace.fs.stat(targetUri);
-                        fileExists = true;
-                    } catch {
-                        // File doesn't exist
-                    }
-
-                    if (fileExists) {
-                        // Show diff view so user can review and merge (don't overwrite)
-                        const generatedUri = vscode.Uri.parse(
-                            'untitled:' + cleanPath + '.generated'
-                        );
-                        const generatedDoc = await vscode.workspace.openTextDocument(generatedUri);
-                        const edit = new vscode.WorkspaceEdit();
-                        edit.insert(generatedUri, new vscode.Position(0, 0), content);
-                        await vscode.workspace.applyEdit(edit);
-                        await vscode.commands.executeCommand(
-                            'vscode.diff',
-                            targetUri,
-                            generatedUri,
-                            `${cleanPath} ↔ Generated`
-                        );
-                        openedCount++;
-                    } else {
-                        // New file — create it directly
-                        await vscode.workspace.fs.writeFile(targetUri, Buffer.from(content, 'utf-8'));
-                        const doc = await vscode.workspace.openTextDocument(targetUri);
-                        await vscode.window.showTextDocument(doc, { preview: false });
-                        openedCount++;
-                    }
-                } else {
-                    // No code content — just open the existing file if it exists
-                    try {
-                        await vscode.workspace.fs.stat(targetUri);
-                        const doc = await vscode.workspace.openTextDocument(targetUri);
-                        await vscode.window.showTextDocument(doc, { preview: false });
-                        openedCount++;
-                    } catch {
-                        this.postMessage({ type: 'ERROR_TOAST', message: `Cannot create ${cleanPath}: No content provided.` });
-                    }
+                if (!content) {
+                    continue;
                 }
+
+                // Write file directly (create or overwrite)
+                await vscode.workspace.fs.writeFile(targetUri, Buffer.from(content, 'utf-8'));
+
+                // Open file in editor
+                const doc = await vscode.workspace.openTextDocument(targetUri);
+                await vscode.window.showTextDocument(doc, { preview: false });
+
+                // Count lines for summary
+                const lineCount = content.split('\n').length;
+                applied.push(`${cleanPath} (${lineCount} lines)`);
             }
 
-            if (openedCount > 0) {
-                const hasExisting = this._lastGeneratedDiffs.some((d: any) => {
-                    try { return require('fs').existsSync(d.file_path); } catch { return false; }
+            if (applied.length > 0) {
+                // Show compact notification
+                const summary = applied.join(', ');
+                const msg = `✅ Applied: ${summary}`;
+                this.postMessage({
+                    type: 'MESSAGE_APPEND',
+                    role: 'system',
+                    content: msg,
                 });
-                const msg = hasExisting
-                    ? `Opened diff view for ${openedCount} file(s). Review and merge changes manually.`
-                    : `Applied changes to ${openedCount} file(s).`;
-                vscode.window.showInformationMessage(msg);
+                vscode.window.showInformationMessage(
+                    `✅ Applied changes to ${applied.length} file(s). Press Ctrl+Z in editor to undo.`
+                );
             }
 
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply changes';
             this.postMessage({ type: 'ERROR_TOAST', message });
         }
+    }
+
+    /**
+     * Handle cancel request — aborts in-flight API calls
+     */
+    private _handleCancelRequest(): void {
+        if (this._abortController) {
+            this._abortController.abort();
+            this._abortController = undefined;
+        }
+        this.postMessage({ type: 'LOADING', loading: false });
+        this.postMessage({
+            type: 'MESSAGE_APPEND',
+            role: 'system',
+            content: '⏹️ Request cancelled.',
+        });
+    }
+
+    /**
+     * Accept a single file — write it to disk and open in editor
+     */
+    private async _handleAcceptFile(filePath: string): Promise<void> {
+        const diff = this._lastGeneratedDiffs.find((d: any) => d.file_path === filePath);
+        if (!diff) {
+            this.postMessage({ type: 'ERROR_TOAST', message: `File not found: ${filePath}` });
+            return;
+        }
+
+        const content = diff.code || diff.content || diff.diff;
+        if (!content) {
+            this.postMessage({ type: 'ERROR_TOAST', message: `No content to apply for ${filePath}` });
+            return;
+        }
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            this.postMessage({ type: 'ERROR_TOAST', message: 'No workspace open.' });
+            return;
+        }
+        const rootUri = workspaceFolders[0].uri;
+        const cleanPath = filePath.replace(/^[\/\\]/, '');
+        const targetUri = path.isAbsolute(filePath)
+            ? vscode.Uri.file(filePath)
+            : vscode.Uri.joinPath(rootUri, cleanPath);
+
+        try {
+            await vscode.workspace.fs.writeFile(targetUri, Buffer.from(content, 'utf-8'));
+            const doc = await vscode.workspace.openTextDocument(targetUri);
+            await vscode.window.showTextDocument(doc, { preview: false });
+
+            const lineCount = content.split('\n').length;
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'system',
+                content: `✅ Applied \`${cleanPath}\` (${lineCount} lines). Ctrl+Z to undo.`,
+            });
+        } catch (error) {
+            const msg = error instanceof Error ? error.message : 'Write failed';
+            this.postMessage({ type: 'ERROR_TOAST', message: msg });
+        }
+    }
+
+    /**
+     * Reject a single file — skip it with a notification
+     */
+    private _handleRejectFile(filePath: string): void {
+        const cleanPath = filePath.replace(/^[\/\\]/, '');
+        this.postMessage({
+            type: 'MESSAGE_APPEND',
+            role: 'system',
+            content: `❌ Skipped \`${cleanPath}\``,
+        });
+    }
+
+    /**
+     * Accept all files at once
+     */
+    private async _handleAcceptAll(): Promise<void> {
+        if (this._lastGeneratedDiffs.length === 0) {
+            this.postMessage({ type: 'ERROR_TOAST', message: 'No changes to apply.' });
+            return;
+        }
+
+        for (const diff of this._lastGeneratedDiffs) {
+            await this._handleAcceptFile(diff.file_path);
+        }
+
+        vscode.window.showInformationMessage(
+            `✅ Applied changes to ${this._lastGeneratedDiffs.length} file(s). Press Ctrl+Z in editor to undo.`
+        );
     }
 
     /**
@@ -775,6 +880,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           <button id="btn-send" class="send-btn" disabled>
             <svg viewBox="0 0 16 16" fill="currentColor">
               <path d="M.989 8L.064 2.68a1.342 1.342 0 011.85-1.462l11.33 4.835a1.34 1.34 0 010 2.442L1.914 13.33a1.342 1.342 0 01-1.85-1.463L.988 8zm1.536.75l-.608 3.594L11.18 8.5H2.525zm0-1.5h8.655L2.917 3.656l-.392 3.594z"/>
+            </svg>
+          </button>
+          <button id="btn-cancel" class="cancel-btn" style="display:none" title="Cancel request">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="3" y="3" width="10" height="10" rx="2" fill="currentColor"/>
             </svg>
           </button>
         </div>

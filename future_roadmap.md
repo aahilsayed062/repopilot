@@ -18,7 +18,8 @@ analyse
 | 1 | Dynamic Multi-Agent Routing | ✅ **DONE** | `agent_router.py`, `chat.py /smart` |
 | 2 | Iterative PyTest-Driven Refinement | ✅ **DONE** | `refinement_loop.py`, `chat.py /refine` |
 | 3 | LLM vs LLM Evaluation Layer | 🟡 **PARTIAL** | `evaluator.py` ✅ created, endpoint & pipeline wiring ❌ |
-| 4 | Risk & Change Impact Analysis | 🔴 **TODO** | `impact_analyzer.py` (create) |
+| 4 | Risk & Change Impact Analysis | ✅ **DONE** | `impact_analyzer.py`, `chat.py /impact` |
+| 5 | UX: Copilot-Style Apply & Impact | ✅ **DONE** | `chatPanel.ts`, `chat.js`, `responseFormatter.ts` |
 
 ### What's Missing for Feature 3 (LLM Evaluation)?
 
@@ -165,7 +166,7 @@ async def evaluate_code(request):
 
 ---
 
-## 🛣️ Feature 4: Risk & Change Impact Analysis (🔴 TODO — Can be done independently!)
+## 🛣️ Feature 4: Risk & Change Impact Analysis (✅ Done)
 
 **What it does:** After code changes are finalized, the system reports which files are directly changed, which are indirectly affected, and what risks are introduced.
 
@@ -206,6 +207,20 @@ The extension already has styled components for:
 - `.impact-severity` badges (critical/high/moderate/low with color coding)
 - `.impact-files` file list with icons
 - `.impact-risks` risk item display
+
+- `.impact-risks` risk item display
+
+---
+
+## 🛣️ Feature 5: UX Improvements (✅ Done)
+
+**What it does:** improved chat interface to match Copilot/Antigravity standards.
+
+### ✅ Completed Items
+- **Per-File Accept/Reject:** users can accept individual files with `+N/-M` line stats.
+- **Cancel Button:** in-flight requests can be cancelled immediately.
+- **Hallucination Fix:** fixed issue where LLM dumped entire file content in diffs.
+- **Impact Analysis UI:** compact inline display of risk analysis.
 
 ---
 

@@ -4,7 +4,7 @@
  * Formats backend responses into a clean, simple template.
  */
 
-import { ChatResponse, GenerationResponse, Citation } from './types';
+import { ChatResponse, GenerationResponse, Citation, ImpactAnalysisResponse } from './types';
 
 /**
  * Format a chat (ask) response - simplified version
@@ -61,11 +61,19 @@ export function formatGenerationResponse(response: GenerationResponse): string {
     sections.push(response.plan);
     sections.push('');
 
-    // Changes
+    // Changes — per-file with +N/-M stats
     if (response.diffs && response.diffs.length > 0) {
-        sections.push('### 🔧 Changes');
+        // Summary header
+        const totalAdded = response.diffs.reduce((sum, d) => sum + countLines(d.diff, '+'), 0);
+        const totalRemoved = response.diffs.reduce((sum, d) => sum + countLines(d.diff, '-'), 0);
+        sections.push(`### 🔧 Changes — ${response.diffs.length} file(s)  \`+${totalAdded} -${totalRemoved}\``);
+        sections.push('');
+
         response.diffs.forEach(diff => {
-            sections.push(`#### 📁 ${diff.file_path}`);
+            const added = countLines(diff.diff, '+');
+            const removed = countLines(diff.diff, '-');
+            const stats = `\`+${added} -${removed}\``;
+            sections.push(`#### 📁 ${diff.file_path}  ${stats}`);
             sections.push('```diff');
             sections.push(diff.diff);
             sections.push('```');
@@ -89,6 +97,14 @@ export function formatGenerationResponse(response: GenerationResponse): string {
     }
 
     return sections.join('\n');
+}
+
+/**
+ * Count + or - lines in a diff string
+ */
+function countLines(diff: string, prefix: '+' | '-'): number {
+    if (!diff) { return 0; }
+    return diff.split('\n').filter(line => line.startsWith(prefix) && !line.startsWith(prefix + prefix)).length;
 }
 
 /**
@@ -129,4 +145,36 @@ export function extractCitations(response: ChatResponse | GenerationResponse): C
         }));
     }
     return [];
+}
+
+/**
+ * Format an impact analysis report — compact inline note
+ */
+export function formatImpactReport(report: ImpactAnalysisResponse): string {
+    const riskEmoji: Record<string, string> = {
+        'LOW': '🟢', 'MEDIUM': '🟡', 'HIGH': '🟠', 'CRITICAL': '🔴',
+    };
+    const emoji = riskEmoji[report.risk_level] || '⚪';
+
+    const parts: string[] = [];
+    parts.push(`**🛡️ Impact:** ${emoji} **${report.risk_level}**`);
+
+    if (report.indirectly_affected.length > 0) {
+        const affected = report.indirectly_affected
+            .map(f => `\`${f.file_path}\``)
+            .join(', ');
+        parts.push(`**Affected:** ${affected}`);
+    }
+
+    if (report.risks.length > 0) {
+        const topRisks = report.risks.slice(0, 2).map(r => `⚠️ ${r}`).join(' · ');
+        parts.push(topRisks);
+    }
+
+    if (report.recommendations.length > 0) {
+        const topRecs = report.recommendations.slice(0, 2).map(r => `💡 ${r}`).join(' · ');
+        parts.push(topRecs);
+    }
+
+    return parts.join('\n');
 }

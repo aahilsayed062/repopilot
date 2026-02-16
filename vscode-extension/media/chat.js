@@ -26,6 +26,7 @@
     const testsBtn = document.getElementById('btn-tests');
     const exportBtn = document.getElementById('btn-export');
     const clearBtn = document.getElementById('btn-clear');
+    const cancelBtn = document.getElementById('btn-cancel');
 
     // Welcome actions
     const welcomeIndex = document.getElementById('welcome-index');
@@ -97,6 +98,13 @@
     function setLoading(loading) {
         isLoading = loading;
         setInputState(currentStatus === 'ready', loading);
+
+        // Toggle send/cancel button visibility
+        if (sendBtn && cancelBtn) {
+            sendBtn.style.display = loading ? 'none' : '';
+            cancelBtn.style.display = loading ? 'flex' : 'none';
+        }
+
         if (loading) {
             showChat();
             addThinking();
@@ -190,6 +198,9 @@
             html += '</div>';
             msgDiv.innerHTML = html;
 
+            // Post-process: inject per-file Accept/Reject buttons after each file's diff
+            injectPerFileButtons(msgDiv);
+
             // Bind citation clicks
             msgDiv.querySelectorAll('.citation-chip').forEach(function (chip) {
                 chip.addEventListener('click', function () {
@@ -207,10 +218,28 @@
                 });
             });
 
-            // Bind action buttons
+            // Bind action buttons (Accept All, Run Tests, etc.)
             msgDiv.querySelectorAll('.msg-action-btn').forEach(function (btn) {
                 btn.addEventListener('click', function () {
                     vscode.postMessage({ type: btn.getAttribute('data-action') });
+                });
+            });
+
+            // Bind per-file accept/reject buttons
+            msgDiv.querySelectorAll('.file-accept-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var filePath = btn.getAttribute('data-file');
+                    vscode.postMessage({ type: 'ACCEPT_FILE', file_path: filePath });
+                    btn.closest('.file-action-bar').style.opacity = '0.4';
+                    btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--success,#48bb78);font-size:11px">✅ Applied</span>';
+                });
+            });
+            msgDiv.querySelectorAll('.file-reject-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var filePath = btn.getAttribute('data-file');
+                    vscode.postMessage({ type: 'REJECT_FILE', file_path: filePath });
+                    btn.closest('.file-action-bar').style.opacity = '0.4';
+                    btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--error,#e53e3e);font-size:11px">❌ Skipped</span>';
                 });
             });
 
@@ -284,9 +313,11 @@
         html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         // Italic
         html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        // Stats +N -M
+        html = html.replace(/`(\+\d+ -\d+)`/g, '<span class="diff-stats">$1</span>');
         // Headers → bold + margin
         html = html.replace(/^### (.+)$/gm, '<strong style="display:block;margin:8px 0 4px">$1</strong>');
-        html = html.replace(/^## (.+)$/gm, '<strong style="display:block;font-size:14px;margin:10px 0 6px">$1</strong>');
+        html = html.replace(/^#### (.+)$/gm, '<strong class="file-header" style="display:block;font-size:13px;margin:12px 0 4px">$1</strong>');
         // Unordered lists
         html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
         html = html.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
@@ -296,6 +327,36 @@
         html = html.replace(/\n/g, '<br>');
 
         return html;
+    }
+
+    function injectPerFileButtons(container) {
+        // Find all file headers
+        const headers = container.querySelectorAll('.file-header');
+        headers.forEach(header => {
+            // Find the file name
+            const text = header.textContent;
+            const match = text.match(/📁\s+([^\s]+)/);
+            if (!match) return;
+            const filePath = match[1];
+
+            // Find the next code block
+            let next = header.nextElementSibling;
+            while (next && !next.classList.contains('code-block')) {
+                next = next.nextElementSibling;
+            }
+
+            if (next && next.classList.contains('code-block')) {
+                // Create action bar
+                const bar = document.createElement('div');
+                bar.className = 'file-action-bar';
+                bar.innerHTML = `
+                    <button class="file-accept-btn" data-file="${escapeAttr(filePath)}">✅ Accept</button>
+                    <button class="file-reject-btn" data-file="${escapeAttr(filePath)}">❌ Reject</button>
+                `;
+                // Insert after code block
+                next.parentNode.insertBefore(bar, next.nextSibling);
+            }
+        });
     }
 
     // ── Helpers ───────────────────────────────────────────────
@@ -652,6 +713,13 @@
     });
 
     sendBtn.addEventListener('click', handleSend);
+
+    // Cancel button
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', function () {
+            vscode.postMessage({ type: 'CANCEL_REQUEST' });
+        });
+    }
 
     // New Chat
     if (newChatBtn) newChatBtn.addEventListener('click', function () {

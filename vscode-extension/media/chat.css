@@ -817,6 +817,44 @@ body {
   height: 14px;
 }
 
+/* Cancel Button */
+.cancel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: var(--error, #e53e3e);
+  border: none;
+  border-radius: var(--radius-md);
+  color: white;
+  cursor: pointer;
+  transition: var(--transition-fast);
+  flex-shrink: 0;
+  animation: cancelPulse 1.5s ease-in-out infinite;
+}
+
+.cancel-btn:hover {
+  background: #c53030;
+}
+
+.cancel-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+@keyframes cancelPulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.7;
+  }
+}
+
 /* ---------- Quick Actions (above input) ---------- */
 .quick-actions {
   display: flex;
@@ -1201,6 +1239,60 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* ---------- Per-File Action Bar ---------- */
+.file-action-bar {
+  display: flex;
+  gap: 8px;
+  margin-top: -6px;
+  margin-bottom: 12px;
+  justify-content: flex-end;
+}
+
+.file-accept-btn,
+.file-reject-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+  color: var(--text-secondary);
+}
+
+.file-accept-btn:hover {
+  background: var(--success-dim);
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.file-reject-btn:hover {
+  background: var(--error-dim);
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Diff Stats (+N -M) */
+.diff-stats {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin-left: 6px;
+  border: 1px solid var(--border);
+}
+
+.file-header {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .mention-item {

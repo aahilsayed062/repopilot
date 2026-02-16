@@ -42,12 +42,20 @@ class Generator:
     Generates code changes and tests.
     """
     
-    SYSTEM_PROMPT = """You are RepoPilot, a code assistant. Write code based on the user's request.
+    SYSTEM_PROMPT = """You are RepoPilot, a code assistant.
+
+RULES:
+- If the user provides [Existing File Content], you MUST preserve ALL existing content and only make the requested changes (append, modify, delete lines, etc). Do NOT rewrite the file from scratch.
+- If no existing content is provided, write new code from scratch.
 
 Respond with JSON:
-{"plan": "brief description of what you will implement", "changes": [{"file_path": "filename.py", "code": "the actual complete code here", "diff": "summary of changes"}], "test_file_content": "test code if applicable"}
+{"plan": "brief description of what you will do", "changes": [{"file_path": "filename.ext", "code": "the COMPLETE updated file content with changes applied", "diff": "+ added line 1\n+ added line 2\n- removed line"}], "test_file_content": "test code if applicable"}
 
-IMPORTANT: Write REAL working code in the "code" field. Do NOT write descriptions or placeholders.
+CRITICAL:
+- "code" must contain the FULL final file content (existing content + your changes merged together)
+- "diff" must show ONLY the new/changed/removed lines with +/- prefixes — NEVER include unchanged existing content in diff
+- For example, if the user says "append a note to README.md" and the file is 50 lines long, the diff should be ONLY: "+ \n+ > Note: dont touch this file" — NOT the entire 50 lines of existing content
+- Write REAL working code, no placeholders
 """
 
     COMPLEXITY_MARKERS = (
@@ -190,11 +198,16 @@ IMPORTANT: Write REAL working code in the "code" field. Do NOT write description
             # 3. Parse and Return
             diffs = []
             for change in data.get("changes", []):
+                file_code = change.get("code")
+                file_diff = change.get("diff", "")
+                # Fallback: if code is empty but diff has content, use diff as code
+                if not file_code and file_diff:
+                    file_code = file_diff
                 diffs.append(FileDiff(
                     file_path=change.get("file_path", "unknown"),
                     where_to_paste=change.get("where_to_paste"),
-                    code=change.get("code"),
-                    diff=change.get("diff", "")
+                    code=file_code,
+                    diff=file_diff
                 ))
             paste_instructions = data.get("paste_instructions")
             if not isinstance(paste_instructions, list):

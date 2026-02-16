@@ -385,6 +385,34 @@ async def stream_chat(request: ChatRequest):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+# ───────────────────────────────────────────────────────────────────
+# /impact — Risk & Change Impact Analysis (Feature 4)
+# ───────────────────────────────────────────────────────────────────
+
+class ImpactRequest(BaseModel):
+    repo_id: str
+    changed_files: list[str]
+    code_changes: str = ""
+
+
+@router.post("/impact")
+async def analyze_impact(request: ImpactRequest):
+    """
+    Analyze the impact of code changes on the repository.
+    Returns risk level, affected files, and recommendations.
+    """
+    try:
+        from app.services.impact_analyzer import impact_analyzer
+        report = await impact_analyzer.analyze(
+            code_changes=request.code_changes,
+            changed_files=request.changed_files,
+            repo_id=request.repo_id,
+        )
+        return report.model_dump()
+    except Exception as e:
+        logger.exception("impact_analysis_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ───────────────────────────────────────────────────────────────────
 # /generate — Code generation

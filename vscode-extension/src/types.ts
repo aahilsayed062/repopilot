@@ -112,6 +112,29 @@ export interface GenerationResponse {
 }
 
 // ============================================================================
+// Impact Analysis Models (Feature 4)
+// ============================================================================
+
+export interface ImpactAnalysisRequest {
+    repo_id: string;
+    changed_files: string[];
+    code_changes: string;
+}
+
+export interface ImpactFile {
+    file_path: string;
+    reason: string;
+}
+
+export interface ImpactAnalysisResponse {
+    directly_changed: string[];
+    indirectly_affected: ImpactFile[];
+    risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+    risks: string[];
+    recommendations: string[];
+}
+
+// ============================================================================
 // PyTest Generation Models
 // ============================================================================
 
@@ -149,7 +172,11 @@ export type WebviewToExtensionMessage =
     | { type: 'APPLY_CHANGES' }
     | { type: 'RUN_TESTS' }
     | { type: 'MESSAGE_CLEAR' }
-    | { type: 'REQUEST_FILE_CONTEXT'; files: string[] };
+    | { type: 'REQUEST_FILE_CONTEXT'; files: string[] }
+    | { type: 'CANCEL_REQUEST' }
+    | { type: 'ACCEPT_FILE'; file_path: string }
+    | { type: 'REJECT_FILE'; file_path: string }
+    | { type: 'ACCEPT_ALL' };
 
 
 // Messages from Extension to Webview

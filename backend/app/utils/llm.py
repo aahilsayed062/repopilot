@@ -218,11 +218,18 @@ class LLMService:
         if json_mode:
             payload["format"] = "json"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            return data["message"]["content"]
+        # Increased timeout for local LLMs which can be slow
+        timeout = httpx.Timeout(300.0, connect=10.0)
+        
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                return data["message"]["content"]
+        except httpx.ReadTimeout:
+            logger.error("ollama_timeout", timeout=300.0)
+            raise Exception("Ollama timed out after 300s. Try a smaller model or faster hardware.")
 
     async def _call_ollama_stream(self, messages, temperature, model, max_tokens, json_mode=False):
         """Call local Ollama API in streaming mode."""
@@ -240,7 +247,8 @@ class LLMService:
         if json_mode:
             payload["format"] = "json"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
+        timeout = httpx.Timeout(300.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", url, json=payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
