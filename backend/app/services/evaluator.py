@@ -50,6 +50,8 @@ class LLMVsLLMResult(BaseModel):
 class CodeEvaluator:
     MAX_CODE_BUNDLE_CHARS = 10_000
     MAX_FILE_CHARS = 2_200
+    REVIEWER_TIMEOUT_SECONDS = 40
+    CONTROLLER_TIMEOUT_SECONDS = 45
 
     CRITIC_PROMPT = """You are the CRITIC reviewer.
 You focus on correctness, logic bugs, security, and requirement fit.
@@ -145,8 +147,14 @@ Return JSON with this schema:
 
         critic_provider = "ollama"
         defender_provider = "gemini" if settings.gemini_api_key else "ollama_b"
+        logger.info(
+            "evaluation_started",
+            diff_count=len(generated_diffs or []),
+            critic_provider=critic_provider,
+            defender_provider=defender_provider,
+        )
 
-        critic_task = self._run_reviewer(
+        critic_task = self._run_reviewer_with_resilience(
             prompt_template=self.CRITIC_PROMPT,
             provider=critic_provider,
             request_text=request_text,
@@ -155,7 +163,7 @@ Return JSON with this schema:
             context=context,
             reviewer_name="critic",
         )
-        defender_task = self._run_reviewer(
+        defender_task = self._run_reviewer_with_resilience(
             prompt_template=self.DEFENDER_PROMPT,
             provider=defender_provider,
             request_text=request_text,
@@ -165,17 +173,7 @@ Return JSON with this schema:
             reviewer_name="defender",
         )
 
-        critic_res, defender_res = await asyncio.gather(
-            critic_task, defender_task, return_exceptions=True
-        )
-
-        critic = critic_res if isinstance(critic_res, ReviewerVerdict) else None
-        defender = defender_res if isinstance(defender_res, ReviewerVerdict) else None
-
-        if isinstance(critic_res, Exception):
-            logger.error("critic_evaluation_failed", error=str(critic_res))
-        if isinstance(defender_res, Exception):
-            logger.error("defender_evaluation_failed", error=str(defender_res))
+        critic, defender = await asyncio.gather(critic_task, defender_task)
 
         controller = await self._run_controller(
             request_text=request_text,
@@ -184,12 +182,60 @@ Return JSON with this schema:
             defender=defender,
         )
 
+        degraded = critic is None or defender is None
+        logger.info(
+            "evaluation_complete",
+            degraded=degraded,
+            controller_decision=controller.decision,
+            final_score=controller.final_score,
+        )
+
         return LLMVsLLMResult(
             enabled=True,
             critic=critic,
             defender=defender,
             controller=controller,
         )
+
+    async def _run_reviewer_with_resilience(
+        self,
+        prompt_template: str,
+        provider: str,
+        request_text: str,
+        code_bundle: str,
+        tests_text: str,
+        context: str,
+        reviewer_name: str,
+    ) -> Optional[ReviewerVerdict]:
+        try:
+            return await asyncio.wait_for(
+                self._run_reviewer(
+                    prompt_template=prompt_template,
+                    provider=provider,
+                    request_text=request_text,
+                    code_bundle=code_bundle,
+                    tests_text=tests_text,
+                    context=context,
+                    reviewer_name=reviewer_name,
+                ),
+                timeout=self.REVIEWER_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "reviewer_timeout",
+                reviewer=reviewer_name,
+                provider=provider,
+                timeout_seconds=self.REVIEWER_TIMEOUT_SECONDS,
+            )
+            return None
+        except Exception as e:
+            logger.warning(
+                "reviewer_failed",
+                reviewer=reviewer_name,
+                provider=provider,
+                error=str(e),
+            )
+            return None
 
     async def _run_reviewer(
         self,
@@ -225,14 +271,29 @@ Return JSON with this schema:
             temperature=0.1,
             max_tokens=900,
         )
-        data = self._parse_json_response(response)
+        try:
+            data = self._parse_json_response(response)
+        except Exception as parse_err:
+            logger.warning(
+                "reviewer_parse_failed",
+                reviewer=reviewer_name,
+                provider=provider,
+                error=str(parse_err),
+            )
+            return ReviewerVerdict(
+                provider=provider,
+                score=0.0,
+                issues=[f"{reviewer_name} returned invalid JSON output."],
+                feedback="Reviewer response could not be parsed. Retry evaluation.",
+                suggested_changes=[],
+            )
 
         return ReviewerVerdict(
             provider=provider,
             score=self._normalize_score(data.get("score", 0.0)),
-            issues=self._to_string_list(data.get("issues")),
+            issues=self._to_string_list(data.get("issues"))[:12],
             feedback=str(data.get("feedback", "")).strip(),
-            suggested_changes=self._to_string_list(data.get("suggested_changes")),
+            suggested_changes=self._to_string_list(data.get("suggested_changes"))[:12],
         )
 
     async def _run_controller(
@@ -253,7 +314,7 @@ Return JSON with this schema:
         )
 
         try:
-            response = await llm.chat_completion(
+            response = await asyncio.wait_for(llm.chat_completion(
                 messages=[
                     {
                         "role": "system",
@@ -265,7 +326,7 @@ Return JSON with this schema:
                 provider_override="ollama",
                 temperature=0.1,
                 max_tokens=900,
-            )
+            ), timeout=self.CONTROLLER_TIMEOUT_SECONDS)
             data = self._parse_json_response(response)
             decision = self._normalize_decision(str(data.get("decision", "")))
 
@@ -284,6 +345,12 @@ Return JSON with this schema:
                     item for item in improved_code if isinstance(item, dict)
                 ],
             )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "controller_timeout",
+                timeout_seconds=self.CONTROLLER_TIMEOUT_SECONDS,
+            )
+            return self._fallback_controller(critic, defender)
         except Exception as e:
             logger.error("controller_evaluation_failed", error=str(e))
             return self._fallback_controller(critic, defender)
@@ -417,4 +484,3 @@ Return JSON with this schema:
 
 
 evaluator = CodeEvaluator()
-

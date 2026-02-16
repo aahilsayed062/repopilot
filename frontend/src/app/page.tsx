@@ -50,6 +50,77 @@ interface FileDiff {
   diff: string;
 }
 
+interface RoutingDecisionPayload {
+  primary_action?: string;
+  secondary_actions?: string[];
+  reasoning?: string;
+  confidence?: number;
+  should_decompose?: boolean;
+  parallel_agents?: string[];
+  skip_agents?: string[];
+}
+
+interface ReviewerVerdictPayload {
+  provider?: string;
+  score?: number;
+  issues?: string[];
+  feedback?: string;
+  suggested_changes?: string[];
+}
+
+interface ImprovedCodePayload {
+  file_path: string;
+  code: string;
+}
+
+interface ControllerVerdictPayload {
+  decision?: string;
+  reasoning?: string;
+  final_score?: number;
+  confidence?: number;
+  merged_issues?: string[];
+  priority_fixes?: string[];
+  improved_code_by_file?: ImprovedCodePayload[];
+}
+
+interface EvaluationPayload {
+  enabled?: boolean;
+  reason?: string;
+  error?: string;
+  critic?: ReviewerVerdictPayload | null;
+  defender?: ReviewerVerdictPayload | null;
+  controller?: ControllerVerdictPayload;
+}
+
+interface ImpactFilePayload {
+  file_path: string;
+  reason: string;
+}
+
+interface ImpactPayload {
+  risk_level?: string;
+  risks?: string[];
+  recommendations?: string[];
+  directly_changed?: string[];
+  indirectly_affected?: ImpactFilePayload[];
+}
+
+interface RefinementIterationPayload {
+  iteration: number;
+  tests_passed: boolean;
+  refinement_action?: string;
+  failures?: string[];
+}
+
+interface RefinementPayload {
+  success: boolean;
+  total_iterations: number;
+  final_code?: string;
+  final_tests?: string;
+  iteration_log?: RefinementIterationPayload[];
+  final_test_output?: string;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -60,6 +131,13 @@ interface Message {
   diffs?: FileDiff[];
   paste_instructions?: string[];
   tests?: string;
+  routing?: RoutingDecisionPayload;
+  agents_used?: string[];
+  agents_skipped?: string[];
+  evaluation?: EvaluationPayload;
+  evaluation_action?: string;
+  evaluation_improved_code?: ImprovedCodePayload[];
+  impact?: ImpactPayload;
 }
 
 interface RepoStats {
@@ -124,6 +202,146 @@ const getCodeLanguageFromPath = (path: string): string => {
   if (lower.endsWith(".json")) return "json";
   if (lower.endsWith(".md")) return "markdown";
   return "text";
+};
+
+const toStringArray = (value: unknown): string[] => (
+  Array.isArray(value)
+    ? value.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0)
+    : []
+);
+
+const toNumberOrUndefined = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+};
+
+const toRoutingPayload = (value: unknown): RoutingDecisionPayload | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  return {
+    primary_action: typeof obj.primary_action === "string" ? obj.primary_action : undefined,
+    secondary_actions: toStringArray(obj.secondary_actions),
+    reasoning: typeof obj.reasoning === "string" ? obj.reasoning : undefined,
+    confidence: toNumberOrUndefined(obj.confidence),
+    should_decompose: typeof obj.should_decompose === "boolean" ? obj.should_decompose : undefined,
+    parallel_agents: toStringArray(obj.parallel_agents),
+    skip_agents: toStringArray(obj.skip_agents),
+  };
+};
+
+const toEvaluationPayload = (value: unknown): EvaluationPayload | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  const toReviewer = (reviewer: unknown): ReviewerVerdictPayload | null => {
+    if (!reviewer || typeof reviewer !== "object") return null;
+    const r = reviewer as Record<string, unknown>;
+    return {
+      provider: typeof r.provider === "string" ? r.provider : undefined,
+      score: toNumberOrUndefined(r.score),
+      issues: toStringArray(r.issues),
+      feedback: typeof r.feedback === "string" ? r.feedback : undefined,
+      suggested_changes: toStringArray(r.suggested_changes),
+    };
+  };
+  const controllerObj = obj.controller;
+  const controller: ControllerVerdictPayload | undefined = controllerObj && typeof controllerObj === "object"
+    ? {
+      decision: typeof (controllerObj as Record<string, unknown>).decision === "string"
+        ? (controllerObj as Record<string, unknown>).decision as string
+        : undefined,
+      reasoning: typeof (controllerObj as Record<string, unknown>).reasoning === "string"
+        ? (controllerObj as Record<string, unknown>).reasoning as string
+        : undefined,
+      final_score: toNumberOrUndefined((controllerObj as Record<string, unknown>).final_score),
+      confidence: toNumberOrUndefined((controllerObj as Record<string, unknown>).confidence),
+      merged_issues: toStringArray((controllerObj as Record<string, unknown>).merged_issues),
+      priority_fixes: toStringArray((controllerObj as Record<string, unknown>).priority_fixes),
+      improved_code_by_file: Array.isArray((controllerObj as Record<string, unknown>).improved_code_by_file)
+        ? ((controllerObj as Record<string, unknown>).improved_code_by_file as unknown[])
+            .filter((item) => item && typeof item === "object")
+            .map((item) => item as Record<string, unknown>)
+            .filter((item) => typeof item.file_path === "string" && typeof item.code === "string")
+            .map((item) => ({ file_path: item.file_path as string, code: item.code as string }))
+        : [],
+    }
+    : undefined;
+
+  return {
+    enabled: typeof obj.enabled === "boolean" ? obj.enabled : undefined,
+    reason: typeof obj.reason === "string" ? obj.reason : undefined,
+    error: typeof obj.error === "string" ? obj.error : undefined,
+    critic: toReviewer(obj.critic),
+    defender: toReviewer(obj.defender),
+    controller,
+  };
+};
+
+const toImpactPayload = (value: unknown): ImpactPayload | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  const indirectlyAffected = Array.isArray(obj.indirectly_affected)
+    ? (obj.indirectly_affected as unknown[])
+        .filter((item) => item && typeof item === "object")
+        .map((item) => item as Record<string, unknown>)
+        .filter((item) => typeof item.file_path === "string")
+        .map((item) => ({
+          file_path: item.file_path as string,
+          reason: typeof item.reason === "string" ? item.reason : "",
+        }))
+    : [];
+
+  return {
+    risk_level: typeof obj.risk_level === "string" ? obj.risk_level : undefined,
+    risks: toStringArray(obj.risks),
+    recommendations: toStringArray(obj.recommendations),
+    directly_changed: toStringArray(obj.directly_changed),
+    indirectly_affected: indirectlyAffected,
+  };
+};
+
+const formatRefinementSummary = (value: unknown): string => {
+  if (!value || typeof value !== "object") {
+    return "Refinement completed.";
+  }
+  const payload = value as Record<string, unknown>;
+  const success = payload.success === true;
+  const totalIterations = toNumberOrUndefined(payload.total_iterations) ?? 0;
+  const iterationLog = Array.isArray(payload.iteration_log)
+    ? (payload.iteration_log as unknown[])
+        .filter((item) => item && typeof item === "object")
+        .map((item) => item as Record<string, unknown>)
+    : [];
+
+  const lines: string[] = [
+    "## Refinement Result",
+    `- Success: ${success ? "Yes" : "No"}`,
+    `- Iterations: ${totalIterations}`,
+  ];
+
+  if (iterationLog.length > 0) {
+    lines.push("");
+    lines.push("### Iteration Log");
+    for (const item of iterationLog.slice(0, 6)) {
+      const n = toNumberOrUndefined(item.iteration) ?? 0;
+      const passed = item.tests_passed === true;
+      const action = String(item.refinement_action ?? "").trim();
+      lines.push(`- Iteration ${n}: ${passed ? "PASS" : "FAIL"}`);
+      if (action) lines.push(`- Action: ${action}`);
+    }
+  }
+
+  const finalOutput = String(payload.final_test_output ?? "").trim();
+  if (finalOutput) {
+    lines.push("");
+    lines.push("### Final Test Output");
+    lines.push(finalOutput.slice(0, 1000));
+  }
+
+  return lines.join("\n");
 };
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
@@ -377,6 +595,126 @@ const PasteGuide = ({ instructions }: PasteGuideProps) => (
   </div>
 );
 
+interface RoutingSummaryProps {
+  routing: RoutingDecisionPayload;
+  agentsUsed?: string[];
+  agentsSkipped?: string[];
+}
+
+const RoutingSummary = ({ routing, agentsUsed = [], agentsSkipped = [] }: RoutingSummaryProps) => (
+  <div className="citations-container">
+    <div className="citations-title">
+      <Layers size={12} />
+      Routing
+    </div>
+    <div className="paste-guide-list">
+      <div className="paste-guide-item">Primary: {routing.primary_action || "unknown"}</div>
+      {typeof routing.confidence === "number" && (
+        <div className="paste-guide-item">Confidence: {(routing.confidence * 100).toFixed(0)}%</div>
+      )}
+      {routing.reasoning && <div className="paste-guide-item">{routing.reasoning}</div>}
+      {agentsUsed.length > 0 && (
+        <div className="paste-guide-item">Agents used: {agentsUsed.join(", ")}</div>
+      )}
+      {agentsSkipped.length > 0 && (
+        <div className="paste-guide-item">Skipped: {agentsSkipped.join(", ")}</div>
+      )}
+    </div>
+  </div>
+);
+
+interface EvaluationSummaryProps {
+  evaluation: EvaluationPayload;
+  evaluationAction?: string;
+  improvedCode?: ImprovedCodePayload[];
+}
+
+const EvaluationSummary = ({ evaluation, evaluationAction, improvedCode = [] }: EvaluationSummaryProps) => {
+  const controller = evaluation.controller;
+  const criticIssues = evaluation.critic?.issues?.length || 0;
+  const defenderIssues = evaluation.defender?.issues?.length || 0;
+
+  return (
+    <div className="citations-container">
+      <div className="citations-title">
+        <Cpu size={12} />
+        LLM Evaluation
+      </div>
+      <div className="paste-guide-list">
+        {evaluation.enabled === false && (
+          <div className="paste-guide-item">
+            Disabled: {evaluation.reason || evaluation.error || "No evaluator output."}
+          </div>
+        )}
+        {evaluation.critic && (
+          <div className="paste-guide-item">
+            Critic ({evaluation.critic.provider || "unknown"}): score {evaluation.critic.score ?? 0}/10, issues {criticIssues}
+          </div>
+        )}
+        {evaluation.defender && (
+          <div className="paste-guide-item">
+            Defender ({evaluation.defender.provider || "unknown"}): score {evaluation.defender.score ?? 0}/10, issues {defenderIssues}
+          </div>
+        )}
+        {controller && (
+          <>
+            <div className="paste-guide-item">
+              Controller: {controller.decision || "unknown"} (score {controller.final_score ?? 0}/10)
+            </div>
+            {controller.priority_fixes && controller.priority_fixes.length > 0 && (
+              <div className="paste-guide-item">
+                Priority fixes: {controller.priority_fixes.slice(0, 3).join(" | ")}
+              </div>
+            )}
+          </>
+        )}
+        {evaluationAction && (
+          <div className="paste-guide-item">Action: {evaluationAction}</div>
+        )}
+      </div>
+      {improvedCode.length > 0 && (
+        <div className="citations-list">
+          {improvedCode.slice(0, 2).map((entry, idx) => (
+            <div key={`${entry.file_path}-${idx}`} className="citation-card">
+              <div className="citation-content">
+                <div className="citation-path">{entry.file_path}</div>
+                <CodeBlock code={entry.code} language={getCodeLanguageFromPath(entry.file_path)} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface ImpactSummaryProps {
+  impact: ImpactPayload;
+}
+
+const ImpactSummary = ({ impact }: ImpactSummaryProps) => (
+  <div className="citations-container">
+    <div className="citations-title">
+      <AlertCircle size={12} />
+      Impact Analysis
+    </div>
+    <div className="paste-guide-list">
+      <div className="paste-guide-item">Risk: {impact.risk_level || "UNKNOWN"}</div>
+      {impact.indirectly_affected && impact.indirectly_affected.length > 0 && (
+        <div className="paste-guide-item">
+          Affected files: {impact.indirectly_affected.slice(0, 3).map((item) => item.file_path).join(", ")}
+        </div>
+      )}
+      {impact.risks && impact.risks.length > 0 && (
+        <div className="paste-guide-item">Risks: {impact.risks.slice(0, 3).join(" | ")}</div>
+      )}
+      {impact.recommendations && impact.recommendations.length > 0 && (
+        <div className="paste-guide-item">Recommendations: {impact.recommendations.slice(0, 3).join(" | ")}</div>
+      )}
+    </div>
+  </div>
+);
+
 // ============================================
 // MAIN COMPONENT
 // ============================================
@@ -411,6 +749,15 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const loadRequestInFlightRef = useRef(false);
   const indexRequestInFlightRef = useRef(false);
+  const latestGenerationRef = useRef<{
+    requestText: string;
+    diffs: FileDiff[];
+    tests: string;
+  }>({
+    requestText: "",
+    diffs: [],
+    tests: "",
+  });
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -750,56 +1097,195 @@ export default function Home() {
     setIsChatLoading(true);
 
     try {
-      if (currentInput.startsWith("/generate ")) {
-        const request = currentInput.replace("/generate ", "");
-        const chatHistory = getRecentChatHistory(messageSnapshot, 5);
-        const res = await fetch(apiUrl("/chat/generate"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id: repoId, request, chat_history: chatHistory }),
-        });
-        const data = await res.json();
+      const chatHistory = getRecentChatHistory(messageSnapshot, 5);
+      const contextFileHints = getContextFileHints(messageSnapshot, 5, 4);
+      const trimmedInput = currentInput.trim();
 
-        if (!res.ok) throw new Error(data.detail || "Generation failed");
+      if (trimmedInput.startsWith("/refine ")) {
+        const refineRequest = trimmedInput.replace("/refine ", "").trim();
+        if (!refineRequest) throw new Error("Usage: /refine <request>");
 
-        setMessages(prev => [...prev, {
-          role: "assistant",
-          content: data.plan || "Generated changes based on your request:",
-          diffs: data.diffs,
-          paste_instructions: data.paste_instructions,
-          tests: data.tests,
-          citations: data.citations?.map((c: string) => ({
-            file_path: c,
-            line_range: "",
-            snippet: "",
-            why: "Analysis context"
-          }))
-        }]);
-      } else {
-        const chatHistory = getRecentChatHistory(messageSnapshot, 5);
-        const contextFileHints = getContextFileHints(messageSnapshot, 5, 4);
-        const res = await fetch(apiUrl("/chat/ask"), {
+        const res = await fetch(apiUrl("/chat/refine"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             repo_id: repoId,
-            question: userMsg.content,
+            request: refineRequest,
             chat_history: chatHistory,
-            context_file_hints: contextFileHints,
           }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Refinement failed");
 
-        if (!res.ok) throw new Error(data.detail || "Query failed");
+        const refinement = data as RefinementPayload;
+        setMessages(prev => [...prev, {
+          role: "assistant",
+          content: formatRefinementSummary(refinement),
+          tests: typeof refinement.final_tests === "string" ? refinement.final_tests : undefined,
+        }]);
+        return;
+      }
+
+      if (trimmedInput === "/evaluate" || trimmedInput.startsWith("/evaluate ")) {
+        const explicitRequest = trimmedInput === "/evaluate"
+          ? ""
+          : trimmedInput.replace("/evaluate ", "").trim();
+
+        const diffs = latestGenerationRef.current.diffs || [];
+        if (diffs.length === 0) {
+          throw new Error("No generated diffs available. Run /generate first.");
+        }
+
+        const requestText = explicitRequest
+          || latestGenerationRef.current.requestText
+          || "Evaluate latest generated code";
+
+        const res = await fetch(apiUrl("/chat/evaluate"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            request_text: requestText,
+            generated_diffs: diffs,
+            tests_text: latestGenerationRef.current.tests || "",
+            context: "",
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Evaluation failed");
 
         setMessages(prev => [...prev, {
           role: "assistant",
-          content: data.answer,
-          citations: data.citations,
-          confidence: data.confidence,
-          assumptions: data.assumptions
+          content: "Evaluation completed.",
+          evaluation: toEvaluationPayload(data),
         }]);
+        return;
       }
+
+      if (trimmedInput === "/tests" || trimmedInput.startsWith("/tests ")) {
+        const customRequest = trimmedInput === "/tests"
+          ? "Generate tests for current repository functionality."
+          : trimmedInput.replace("/tests ", "").trim();
+        const res = await fetch(apiUrl("/chat/pytest"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repo_id: repoId,
+            custom_request: customRequest,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "PyTest generation failed");
+
+        setMessages(prev => [...prev, {
+          role: "assistant",
+          content: String(data.explanation || "Generated tests."),
+          tests: typeof data.tests === "string" ? data.tests : undefined,
+          citations: Array.isArray(data.source_files)
+            ? (data.source_files as string[]).map((filePath) => ({
+                file_path: filePath,
+                line_range: "",
+                snippet: "",
+                why: "Source file",
+              }))
+            : [],
+        }]);
+        return;
+      }
+
+      let smartQuestion = userMsg.content;
+      if (currentInput.startsWith("/generate ")) {
+        smartQuestion = currentInput.replace("/generate ", "").trim();
+      } else if (currentInput.startsWith("/smart ")) {
+        smartQuestion = currentInput.replace("/smart ", "").trim();
+      }
+      if (!smartQuestion) smartQuestion = userMsg.content;
+
+      const res = await fetch(apiUrl("/chat/smart"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repo_id: repoId,
+          question: smartQuestion,
+          chat_history: chatHistory,
+          context_file_hints: contextFileHints,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data.detail || "Smart query failed");
+
+      const smartData = (data && typeof data === "object") ? (data as Record<string, unknown>) : {};
+      const generatePayload = smartData.generate && typeof smartData.generate === "object"
+        ? smartData.generate as Record<string, unknown>
+        : undefined;
+
+      const mappedCitations: Citation[] = Array.isArray(smartData.citations)
+        ? (smartData.citations as unknown[])
+            .map((item) => {
+              if (item && typeof item === "object" && "file_path" in item) {
+                const citation = item as Record<string, unknown>;
+                return {
+                  file_path: String(citation.file_path ?? ""),
+                  line_range: String(citation.line_range ?? ""),
+                  snippet: String(citation.snippet ?? ""),
+                  why: String(citation.why ?? ""),
+                };
+              }
+              return {
+                file_path: String(item ?? ""),
+                line_range: "",
+                snippet: "",
+                why: "Generation context",
+              };
+            })
+            .filter((item) => item.file_path.length > 0)
+        : Array.isArray(generatePayload?.citations)
+          ? (generatePayload.citations as unknown[]).map((item) => ({
+            file_path: String(item ?? ""),
+            line_range: "",
+            snippet: "",
+            why: "Generation context",
+          })).filter((item) => item.file_path.length > 0)
+          : [];
+
+      const assistantMessage: Message = {
+        role: "assistant",
+        content:
+          typeof smartData.answer === "string"
+            ? smartData.answer
+            : typeof generatePayload?.plan === "string"
+              ? generatePayload.plan
+              : "Request processed.",
+        citations: mappedCitations,
+        confidence: typeof smartData.confidence === "string" ? smartData.confidence : undefined,
+        assumptions: toStringArray(smartData.assumptions),
+        diffs: Array.isArray(generatePayload?.diffs) ? generatePayload?.diffs as FileDiff[] : undefined,
+        paste_instructions: toStringArray(generatePayload?.paste_instructions),
+        tests: typeof generatePayload?.tests === "string" ? generatePayload.tests : undefined,
+        routing: toRoutingPayload(smartData.routing),
+        agents_used: toStringArray(smartData.agents_used),
+        agents_skipped: toStringArray(smartData.agents_skipped),
+        evaluation: toEvaluationPayload(smartData.evaluation),
+        evaluation_action: typeof smartData.evaluation_action === "string" ? smartData.evaluation_action : undefined,
+        evaluation_improved_code: Array.isArray(smartData.evaluation_improved_code)
+          ? (smartData.evaluation_improved_code as unknown[])
+              .filter((item) => item && typeof item === "object")
+              .map((item) => item as Record<string, unknown>)
+              .filter((item) => typeof item.file_path === "string" && typeof item.code === "string")
+              .map((item) => ({ file_path: item.file_path as string, code: item.code as string }))
+          : undefined,
+        impact: toImpactPayload(smartData.impact),
+      };
+
+      if (assistantMessage.diffs && assistantMessage.diffs.length > 0) {
+        latestGenerationRef.current = {
+          requestText: smartQuestion,
+          diffs: assistantMessage.diffs,
+          tests: assistantMessage.tests || "",
+        };
+      }
+
+      setMessages(prev => [...prev, assistantMessage]);
 
     } catch (e: unknown) {
       const error = e as Error;
@@ -1059,7 +1545,7 @@ export default function Home() {
             transition={{ delay: 0.4 }}
             className="tip-box"
           >
-            <strong>Pro Tip:</strong> Use <code>/generate</code> followed by a feature request to create code patches.
+            <strong>Pro Tip:</strong> Use <code>/generate</code>, <code>/refine</code>, <code>/evaluate</code>, and <code>/tests</code> commands for Round 2 workflows.
           </motion.div>
         </aside>
 
@@ -1175,6 +1661,29 @@ export default function Home() {
                       {/* Code in response */}
                       {msg.tests && (
                         <CodeBlock code={msg.tests} language="python" />
+                      )}
+
+                      {/* Routing */}
+                      {msg.routing && (
+                        <RoutingSummary
+                          routing={msg.routing}
+                          agentsUsed={msg.agents_used}
+                          agentsSkipped={msg.agents_skipped}
+                        />
+                      )}
+
+                      {/* Evaluation */}
+                      {msg.evaluation && (
+                        <EvaluationSummary
+                          evaluation={msg.evaluation}
+                          evaluationAction={msg.evaluation_action}
+                          improvedCode={msg.evaluation_improved_code}
+                        />
+                      )}
+
+                      {/* Impact */}
+                      {msg.impact && (
+                        <ImpactSummary impact={msg.impact} />
                       )}
 
                       {/* Diffs */}

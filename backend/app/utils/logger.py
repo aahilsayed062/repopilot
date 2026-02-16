@@ -41,6 +41,9 @@ def setup_logging(debug: bool = False):
     # Set log level
     log_level = logging.DEBUG if debug else logging.INFO
     
+    stdout_encoding = (getattr(sys.stdout, "encoding", None) or "").lower()
+    use_console_renderer = debug and ("utf" in stdout_encoding)
+
     # Configure structlog
     structlog.configure(
         processors=[
@@ -48,7 +51,7 @@ def setup_logging(debug: bool = False):
             add_request_id,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer() if debug else structlog.processors.JSONRenderer()
+            structlog.dev.ConsoleRenderer() if use_console_renderer else structlog.processors.JSONRenderer()
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
@@ -62,6 +65,9 @@ def setup_logging(debug: bool = False):
         stream=sys.stdout,
         level=log_level,
     )
+    # Reduce per-request transport noise while keeping warnings/errors visible.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def get_logger(name: str = __name__) -> structlog.BoundLogger:

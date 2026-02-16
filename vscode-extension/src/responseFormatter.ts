@@ -4,7 +4,14 @@
  * Formats backend responses into a clean, simple template.
  */
 
-import { ChatResponse, GenerationResponse, Citation, ImpactAnalysisResponse } from './types';
+import {
+    ChatResponse,
+    GenerationResponse,
+    Citation,
+    ImpactAnalysisResponse,
+    EvaluationResponse,
+    RefinementResponse,
+} from './types';
 
 /**
  * Format a chat (ask) response - simplified version
@@ -177,4 +184,82 @@ export function formatImpactReport(report: ImpactAnalysisResponse): string {
     }
 
     return parts.join('\n');
+}
+
+/**
+ * Format evaluator response (Feature 3) as markdown
+ */
+export function formatEvaluationReport(report: EvaluationResponse): string {
+    const sections: string[] = [];
+
+    sections.push('### 🧠 Evaluation');
+    if (report.enabled === false) {
+        sections.push(`Disabled: ${report.reason || report.error || 'No evaluator output.'}`);
+        return sections.join('\n');
+    }
+
+    if (report.critic) {
+        sections.push(
+            `- **Critic (${report.critic.provider})**: ${report.critic.score}/10, issues: ${report.critic.issues.length}`
+        );
+    }
+    if (report.defender) {
+        sections.push(
+            `- **Defender (${report.defender.provider})**: ${report.defender.score}/10, issues: ${report.defender.issues.length}`
+        );
+    }
+
+    sections.push(
+        `- **Controller**: ${report.controller.decision} (score ${report.controller.final_score}/10, confidence ${Math.round((report.controller.confidence || 0) * 100)}%)`
+    );
+
+    if (report.controller.priority_fixes?.length > 0) {
+        sections.push('');
+        sections.push('**Priority fixes:**');
+        report.controller.priority_fixes.slice(0, 5).forEach((fix) => {
+            sections.push(`- ${fix}`);
+        });
+    }
+
+    if (report.controller.improved_code_by_file?.length > 0) {
+        sections.push('');
+        sections.push('**Improved code suggestions:**');
+        report.controller.improved_code_by_file.slice(0, 3).forEach((item) => {
+            sections.push(`- \`${item.file_path}\``);
+        });
+    }
+
+    return sections.join('\n');
+}
+
+/**
+ * Format iterative refinement response (Feature 2)
+ */
+export function formatRefinementReport(report: RefinementResponse): string {
+    const sections: string[] = [];
+    sections.push('### ♻️ Refinement Result');
+    sections.push(`- **Success:** ${report.success ? 'Yes' : 'No'}`);
+    sections.push(`- **Iterations:** ${report.total_iterations}`);
+    sections.push('');
+
+    if (report.iteration_log?.length > 0) {
+        sections.push('**Iteration log:**');
+        report.iteration_log.forEach((it) => {
+            const status = it.tests_passed ? 'PASS' : 'FAIL';
+            sections.push(`- Iteration ${it.iteration}: ${status}`);
+            if (it.refinement_action) {
+                sections.push(`  Action: ${it.refinement_action}`);
+            }
+        });
+    }
+
+    if (report.final_tests?.trim()) {
+        sections.push('');
+        sections.push('### 🧪 Final Tests');
+        sections.push('```python');
+        sections.push(report.final_tests);
+        sections.push('```');
+    }
+
+    return sections.join('\n');
 }

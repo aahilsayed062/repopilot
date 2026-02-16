@@ -16,10 +16,16 @@ import {
     ChatResponse,
     GenerationRequest,
     GenerationResponse,
+    SmartChatResponse,
+    EvaluateRequest,
+    EvaluationResponse,
+    RefineRequest,
+    RefinementResponse,
     ImpactAnalysisRequest,
     ImpactAnalysisResponse,
     PyTestRequest,
     PyTestResponse,
+    FileDiff,
 } from './types';
 
 /**
@@ -272,6 +278,70 @@ export async function generateCode(
         method: 'POST',
         body: JSON.stringify(body),
     }, 120000); // 2 min -- LLM can be slow
+}
+
+/**
+ * Smart chat endpoint with dynamic routing (Round 2)
+ */
+export async function smartChat(
+    repoId: string,
+    question: string,
+    chatHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    contextFileHints: string[] = []
+): Promise<SmartChatResponse> {
+    const body = {
+        repo_id: repoId,
+        question,
+        chat_history: chatHistory,
+        context_file_hints: contextFileHints,
+    };
+
+    return fetchJson<SmartChatResponse>('/chat/smart', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }, 120000);
+}
+
+/**
+ * Iterative refinement endpoint (Round 2 Feature 2)
+ */
+export async function refineCode(
+    repoId: string,
+    request: string,
+    chatHistory: Array<{ role: string; content: string }> = []
+): Promise<RefinementResponse> {
+    const body: RefineRequest = {
+        repo_id: repoId,
+        request,
+        chat_history: chatHistory,
+    };
+
+    return fetchJson<RefinementResponse>('/chat/refine', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }, 180000); // 3 min -- iterative loop can take longer
+}
+
+/**
+ * Evaluate generated diffs using Critic-Defender-Controller (Feature 3)
+ */
+export async function evaluateGeneration(
+    requestText: string,
+    generatedDiffs: FileDiff[],
+    testsText: string = '',
+    context: string = ''
+): Promise<EvaluationResponse> {
+    const body: EvaluateRequest = {
+        request_text: requestText,
+        generated_diffs: generatedDiffs,
+        tests_text: testsText,
+        context,
+    };
+
+    return fetchJson<EvaluationResponse>('/chat/evaluate', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }, 120000);
 }
 
 /**

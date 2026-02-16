@@ -1,6 +1,6 @@
 """
 Iterative PyTest-Driven Refinement Loop.
-Generates code → tests → runs → refines based on failures.
+Generates code -> tests -> runs -> refines based on failures.
 
 Round 2 Feature: Self-correcting code generation with automated test verification.
 """
@@ -9,12 +9,14 @@ import json
 import subprocess
 import tempfile
 import os
+import sys
 from typing import Optional, List
 from pydantic import BaseModel, Field
 from app.utils.llm import llm
 from app.utils.logger import get_logger
 from app.services.generator import generator, GenerationResponse
 from app.services.test_generator import test_generator
+from app.config import settings
 
 logger = get_logger(__name__)
 MAX_ITERATIONS = 4
@@ -54,6 +56,7 @@ class RefinementLoop:
       4. If tests fail, feed errors back to the LLM for a fix
       5. Repeat up to MAX_ITERATIONS times
     """
+    TEMP_DIR_NAME = "_refinement_tmp"
 
     REFINE_PROMPT = """You are a code refinement agent.
 The previous code generation produced code that FAILED its tests.
@@ -84,7 +87,7 @@ Return JSON:
         request: str,
         chat_history: Optional[List[dict]] = None,
     ) -> RefinementResult:
-        """Run the full generate → test → refine loop."""
+        """Run the full generate -> test -> refine loop."""
         iteration_log: List[IterationResult] = []
         current_code = ""
         current_tests = ""
@@ -150,7 +153,7 @@ Return JSON:
             )
 
             if passed:
-                iteration.refinement_action = "Tests passed — no refinement needed"
+                iteration.refinement_action = "Tests passed - no refinement needed"
                 iteration_log.append(iteration)
                 logger.info("tests_passed", iteration=i)
                 break
@@ -178,7 +181,7 @@ Return JSON:
 
         final_passed = iteration_log[-1].tests_passed if iteration_log else False
 
-        return RefinementResult(
+        result = RefinementResult(
             success=final_passed,
             total_iterations=len(iteration_log),
             final_code=current_code,
@@ -188,6 +191,12 @@ Return JSON:
                 iteration_log[-1].test_output if iteration_log else ""
             ),
         )
+        logger.info(
+            "refinement_complete",
+            success=result.success,
+            total_iterations=result.total_iterations,
+        )
+        return result
 
     # ── Private helpers ────────────────────────────────────────────
 
@@ -210,62 +219,80 @@ Return JSON:
         Run pytest in a temporary directory.
         Returns (output_text, passed_bool, failure_lines).
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Write the generated code
-            code_file = os.path.join(tmpdir, "solution.py")
-            test_file = os.path.join(tmpdir, "test_solution.py")
-
-            with open(code_file, "w", encoding="utf-8") as f:
-                f.write(code)
-
-            # Prepend sys.path so tests can import solution
-            test_with_import = (
-                f"import sys, os\n"
-                f"sys.path.insert(0, os.path.dirname(__file__))\n"
-                f"{tests}"
+        tmp_root = settings.data_dir / self.TEMP_DIR_NAME
+        try:
+            tmp_root.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return (
+                f"Could not initialize refinement temp directory: {e}",
+                False,
+                [f"temp_dir_init_error: {e}"],
             )
-            with open(test_file, "w", encoding="utf-8") as f:
-                f.write(test_with_import)
 
-            try:
-                result = subprocess.run(
-                    ["python", "-m", "pytest", test_file,
-                     "-v", "--tb=short", "--no-header"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    cwd=tmpdir,
+        try:
+            with tempfile.TemporaryDirectory(dir=str(tmp_root)) as tmpdir:
+                # Write the generated code
+                code_file = os.path.join(tmpdir, "solution.py")
+                test_file = os.path.join(tmpdir, "test_solution.py")
+
+                with open(code_file, "w", encoding="utf-8") as f:
+                    f.write(code)
+
+                # Prepend sys.path so tests can import solution
+                test_with_import = (
+                    "import sys, os\n"
+                    "sys.path.insert(0, os.path.dirname(__file__))\n"
+                    f"{tests}"
                 )
-                output = result.stdout + result.stderr
-                passed = result.returncode == 0
+                with open(test_file, "w", encoding="utf-8") as f:
+                    f.write(test_with_import)
 
-                # Extract failure lines
-                failures: List[str] = []
-                for line in output.split("\n"):
-                    stripped = line.strip()
-                    if any(kw in stripped for kw in
-                           ["FAILED", "ERROR", "AssertionError",
-                            "AssertionError", "ModuleNotFoundError",
-                            "ImportError", "SyntaxError"]):
-                        failures.append(stripped)
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pytest", test_file,
+                         "-v", "--tb=short", "--no-header"],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        cwd=tmpdir,
+                    )
+                    output = result.stdout + result.stderr
+                    passed = result.returncode == 0
 
-                return output, passed, failures
+                    # Extract failure lines
+                    failures: List[str] = []
+                    for line in output.split("\n"):
+                        stripped = line.strip()
+                        if any(kw in stripped for kw in
+                               ["FAILED", "ERROR", "AssertionError",
+                                "ModuleNotFoundError",
+                                "ImportError", "SyntaxError"]):
+                            failures.append(stripped)
 
-            except subprocess.TimeoutExpired:
-                return (
-                    "Test execution timed out (30s limit)",
-                    False,
-                    ["Timeout"],
-                )
-            except FileNotFoundError:
-                return (
-                    "pytest not found — install with: pip install pytest",
-                    False,
-                    ["pytest not installed"],
-                )
-            except Exception as e:
-                return f"Error running tests: {e}", False, [str(e)]
+                    return output, passed, failures
 
+                except subprocess.TimeoutExpired:
+                    return (
+                        "Test execution timed out (30s limit)",
+                        False,
+                        ["Timeout"],
+                    )
+                except FileNotFoundError:
+                    return (
+                        "pytest not found - install with: pip install pytest",
+                        False,
+                        ["pytest not installed"],
+                    )
+                except Exception as e:
+                    return f"Error running tests: {e}", False, [str(e)]
+        except PermissionError as e:
+            return (
+                f"Permission denied creating temp refinement workspace under {tmp_root}: {e}",
+                False,
+                [f"permission_error: {e}"],
+            )
+        except Exception as e:
+            return f"Error initializing temp workspace: {e}", False, [str(e)]
     async def _refine(
         self, code: str, tests: str, failure_output: str
     ) -> dict:

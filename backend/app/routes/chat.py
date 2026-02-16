@@ -523,11 +523,44 @@ async def _run_generate(request: ChatRequest) -> dict:
     return result.model_dump()
 
 
-async def _run_test(request: ChatRequest) -> dict:
+def _build_generation_context_for_tests(files: list[dict], priority_fixes: list[str]) -> str:
+    """Build compact finalized code context for test generation prompts."""
+    lines: list[str] = []
+    if priority_fixes:
+        lines.append("Priority fixes from evaluator:")
+        lines.extend(f"- {fix}" for fix in priority_fixes[:6])
+        lines.append("")
+
+    for item in files[:4]:
+        if not isinstance(item, dict):
+            continue
+        file_path = str(item.get("file_path", "unknown")).strip() or "unknown"
+        content = (
+            str(item.get("code", "")).strip()
+            or str(item.get("content", "")).strip()
+            or str(item.get("diff", "")).strip()
+        )
+        if not content:
+            continue
+        snippet = content[:1200]
+        lines.append(f"File: {file_path}\n{snippet}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+async def _run_test(request: ChatRequest, extra_context: str = "") -> dict:
     """Run the TEST pipeline (same logic as /pytest)."""
+    custom_request = request.question
+    if extra_context.strip():
+        custom_request = (
+            f"{request.question}\n\n"
+            "Use this finalized generated code context while writing tests:\n"
+            f"{extra_context[:3500]}"
+        )
     result = await test_generator.generate_tests(
         repo_id=request.repo_id,
-        custom_request=request.question,
+        custom_request=custom_request,
     )
     return result
 
@@ -571,11 +604,28 @@ async def smart_chat(request: ChatRequest):
         # Step 3: Dispatch to agents based on routing decision
         # Multiple agents can run concurrently via asyncio.gather
         tasks = {}
-        if decision.primary_action == AgentAction.EXPLAIN or AgentAction.EXPLAIN in decision.secondary_actions:
+        wants_explain = (
+            decision.primary_action == AgentAction.EXPLAIN
+            or AgentAction.EXPLAIN in decision.secondary_actions
+            or decision.primary_action == AgentAction.DECOMPOSE
+            or decision.should_decompose
+        )
+        wants_generate = (
+            decision.primary_action == AgentAction.GENERATE
+            or AgentAction.GENERATE in decision.secondary_actions
+        )
+        wants_test = (
+            decision.primary_action == AgentAction.TEST
+            or AgentAction.TEST in decision.secondary_actions
+            or AgentAction.TEST in decision.parallel_agents
+        )
+        defer_test_until_evaluation = wants_generate and wants_test
+
+        if wants_explain:
             tasks["explain"] = _run_explain(request)
-        if decision.primary_action == AgentAction.GENERATE or AgentAction.GENERATE in decision.secondary_actions:
+        if wants_generate:
             tasks["generate"] = _run_generate(request)
-        if decision.primary_action == AgentAction.TEST or AgentAction.TEST in decision.secondary_actions or AgentAction.TEST in decision.parallel_agents:
+        if wants_test and not defer_test_until_evaluation:
             tasks["test"] = _run_test(request)
         if decision.primary_action == AgentAction.DECOMPOSE or decision.should_decompose:
             # Decompose then explain — pass decompose=True to trigger planner
@@ -620,32 +670,60 @@ async def smart_chat(request: ChatRequest):
         elif "generate" in result and isinstance(result["generate"], dict):
             result["answer"] = result["generate"].get("plan", "Code generation completed.")
             result["confidence"] = "high"
-            # Feature 3: run LLM-vs-LLM evaluation on generated code.
+        else:
+            result.setdefault("answer", "Request processed.")
+            result.setdefault("confidence", "medium")
+
+        # Feature 3: run LLM-vs-LLM evaluation whenever generation produced diffs,
+        # regardless of which top-level answer branch was selected.
+        generate_payload = result.get("generate")
+        controller_decision = ""
+        controller_priority_fixes: list[str] = []
+        finalized_generation_files: list[dict] = []
+        finalized_generation_source = "original_generation"
+
+        if isinstance(generate_payload, dict):
             try:
-                diffs = result["generate"].get("diffs", [])
+                diffs = generate_payload.get("diffs", [])
                 if diffs:
                     from app.services.evaluator import evaluator
-                    eval_context = ""
-                    if isinstance(result.get("explain"), dict):
-                        eval_context = str(result["explain"].get("answer", ""))
 
+                    logger.info("smart_evaluation_started", diff_count=len(diffs))
                     evaluation = await evaluator.evaluate_generation(
                         request_text=request.question,
                         generated_diffs=diffs,
-                        tests_text=str(result["generate"].get("tests", "")),
-                        context=eval_context,
+                        tests_text=str(generate_payload.get("tests", "")),
+                        context=str(result.get("answer", "")),
                     )
                     eval_payload = evaluation.model_dump()
                     result["evaluation"] = eval_payload
 
                     controller = eval_payload.get("controller", {})
-                    decision = str(controller.get("decision", ""))
-                    if decision == "REQUEST_REVISION":
+                    controller_decision = str(controller.get("decision", "")).strip().upper()
+                    controller_priority_fixes = [
+                        str(item).strip()
+                        for item in controller.get("priority_fixes", [])
+                        if str(item).strip()
+                    ]
+                    if controller_decision == "REQUEST_REVISION":
                         result["evaluation_action"] = "revision_recommended"
-                    elif decision == "MERGE_FEEDBACK":
+                    elif controller_decision == "MERGE_FEEDBACK":
                         improved = controller.get("improved_code_by_file", [])
                         if isinstance(improved, list) and improved:
                             result["evaluation_improved_code"] = improved
+                            finalized_generation_files = [
+                                item for item in improved if isinstance(item, dict)
+                            ]
+                            finalized_generation_source = "controller_merged_feedback"
+                    if not finalized_generation_files:
+                        finalized_generation_files = [
+                            item for item in diffs if isinstance(item, dict)
+                        ]
+                    logger.info(
+                        "smart_evaluation_complete",
+                        decision=controller_decision or "unknown",
+                        final_score=controller.get("final_score"),
+                    )
                 else:
                     result["evaluation"] = {
                         "enabled": False,
@@ -657,9 +735,71 @@ async def smart_chat(request: ChatRequest):
                     "enabled": False,
                     "error": str(eval_err),
                 }
-        else:
-            result.setdefault("answer", "Request processed.")
-            result.setdefault("confidence", "medium")
+                finalized_generation_files = [
+                    item for item in generate_payload.get("diffs", []) if isinstance(item, dict)
+                ]
+                finalized_generation_source = "evaluation_failed_fallback"
+
+            # Feature 4 visibility in /chat/smart: include impact analysis payload.
+            try:
+                diffs = generate_payload.get("diffs", [])
+                if diffs:
+                    from app.services.impact_analyzer import impact_analyzer
+
+                    changed_files = [
+                        str(d.get("file_path", ""))
+                        for d in diffs
+                        if isinstance(d, dict) and str(d.get("file_path", "")).strip()
+                    ]
+                    code_changes = "\n\n".join(
+                        f"--- {d.get('file_path', 'unknown')} ---\n{d.get('diff', '')}"
+                        for d in diffs
+                        if isinstance(d, dict)
+                    )
+                    if changed_files:
+                        impact_report = await impact_analyzer.analyze(
+                            code_changes=code_changes,
+                            changed_files=changed_files,
+                            repo_id=request.repo_id,
+                        )
+                        result["impact"] = impact_report.model_dump()
+            except Exception as impact_err:
+                logger.warning("smart_impact_failed", error=str(impact_err))
+
+            if finalized_generation_files:
+                result["finalized_generation"] = {
+                    "source": finalized_generation_source,
+                    "controller_decision": controller_decision or "UNKNOWN",
+                    "files": finalized_generation_files,
+                }
+
+            # Feature 3 completion behavior:
+            # if TEST was requested with GENERATE, run TEST only after evaluation/finalization.
+            if defer_test_until_evaluation:
+                decision_for_test = controller_decision or "ACCEPT_ORIGINAL"
+                if decision_for_test == "REQUEST_REVISION":
+                    result["test"] = {
+                        "skipped": True,
+                        "reason": (
+                            "Skipped TEST generation because evaluator requested revision first."
+                        ),
+                    }
+                    result["agents_skipped"] = list(
+                        dict.fromkeys((result.get("agents_skipped") or []) + ["TEST"])
+                    )
+                    result["agents_used"] = [
+                        agent for agent in (result.get("agents_used") or []) if agent != "TEST"
+                    ]
+                else:
+                    try:
+                        finalized_context = _build_generation_context_for_tests(
+                            finalized_generation_files,
+                            controller_priority_fixes,
+                        )
+                        result["test"] = await _run_test(request, extra_context=finalized_context)
+                    except Exception as test_err:
+                        logger.error("deferred_test_failed", error=str(test_err))
+                        result["test"] = {"error": str(test_err)}
 
         return result
 

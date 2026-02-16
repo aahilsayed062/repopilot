@@ -112,6 +112,101 @@ export interface GenerationResponse {
 }
 
 // ============================================================================
+// Smart Chat / Evaluation / Refinement (Round 2)
+// ============================================================================
+
+export interface RoutingDecision {
+    primary_action: string;
+    secondary_actions?: string[];
+    reasoning?: string;
+    confidence?: number;
+    should_decompose?: boolean;
+    parallel_agents?: string[];
+    skip_agents?: string[];
+}
+
+export interface ReviewerVerdict {
+    provider: string;
+    score: number;
+    issues: string[];
+    feedback: string;
+    suggested_changes: string[];
+}
+
+export interface ImprovedCodeFile {
+    file_path: string;
+    code: string;
+}
+
+export interface ControllerVerdict {
+    decision: 'ACCEPT_ORIGINAL' | 'REQUEST_REVISION' | 'MERGE_FEEDBACK' | string;
+    reasoning: string;
+    final_score: number;
+    confidence: number;
+    merged_issues: string[];
+    priority_fixes: string[];
+    improved_code_by_file: ImprovedCodeFile[];
+}
+
+export interface EvaluationResponse {
+    enabled: boolean;
+    reason?: string;
+    error?: string;
+    critic?: ReviewerVerdict | null;
+    defender?: ReviewerVerdict | null;
+    controller: ControllerVerdict;
+}
+
+export interface SmartChatResponse {
+    answer?: string;
+    confidence?: AnswerConfidence | string;
+    citations?: Citation[];
+    assumptions?: string[];
+    routing?: RoutingDecision;
+    agents_used?: string[];
+    agents_skipped?: string[];
+    explain?: ChatResponse;
+    generate?: GenerationResponse;
+    test?: PyTestResponse;
+    evaluation?: EvaluationResponse;
+    evaluation_action?: string;
+    evaluation_improved_code?: ImprovedCodeFile[];
+    impact?: ImpactAnalysisResponse;
+}
+
+export interface EvaluateRequest {
+    request_text: string;
+    generated_diffs: FileDiff[];
+    tests_text?: string;
+    context?: string;
+}
+
+export interface RefineRequest {
+    repo_id: string;
+    request: string;
+    chat_history?: Array<{ role: string; content: string }>;
+}
+
+export interface RefinementIteration {
+    iteration: number;
+    code_snippet: string;
+    tests_snippet: string;
+    test_output: string;
+    tests_passed: boolean;
+    failures: string[];
+    refinement_action: string;
+}
+
+export interface RefinementResponse {
+    success: boolean;
+    total_iterations: number;
+    final_code: string;
+    final_tests: string;
+    iteration_log: RefinementIteration[];
+    final_test_output: string;
+}
+
+// ============================================================================
 // Impact Analysis Models (Feature 4)
 // ============================================================================
 

@@ -13,7 +13,14 @@ import {
     Citation,
 } from './types';
 import * as api from './apiClient';
-import { formatChatResponse, formatGenerationResponse, formatSafeRefusal, formatImpactReport } from './responseFormatter';
+import {
+    formatChatResponse,
+    formatGenerationResponse,
+    formatSafeRefusal,
+    formatImpactReport,
+    formatEvaluationReport,
+    formatRefinementReport,
+} from './responseFormatter';
 import { openCitedFile, parseLineRange } from './fileOpener';
 import { getStoredState, saveRepoInfo, getStoredRepoId, loadChatHistory, saveChatHistory } from './storage';
 
@@ -233,6 +240,19 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        const trimmed = (question || '').trim();
+        if (trimmed.startsWith('/refine ')) {
+            await this._handleRefine(trimmed.substring('/refine '.length).trim());
+            return;
+        }
+        if (trimmed === '/evaluate' || trimmed.startsWith('/evaluate ')) {
+            const evalPrompt = trimmed === '/evaluate'
+                ? this._lastGenerationRequest || 'Evaluate latest generated code'
+                : trimmed.substring('/evaluate '.length).trim();
+            await this._handleEvaluate(evalPrompt);
+            return;
+        }
+
         this.postMessage({ type: 'LOADING', loading: true });
         this._abortController = new AbortController();
 
@@ -292,6 +312,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     private _lastGeneratedDiffs: any[] = [];
     private _lastGeneratedTests: string = '';
+    private _lastGenerationRequest: string = '';
     private _pendingFileContext: string = '';
 
     /**
@@ -319,6 +340,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
             const response = await api.generateCode(this._repoId, requestWithContext);
             const formatted = formatGenerationResponse(response);
+            this._lastGenerationRequest = requestWithContext;
 
             // Store diffs and tests
             this._lastGeneratedDiffs = response.diffs || [];
@@ -339,6 +361,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 buttons: buttons.length > 0 ? buttons : undefined
             });
 
+            const addendumSections: string[] = [];
+
             // Feature 4: Auto-run Impact Analysis (compact inline)
             if (this._lastGeneratedDiffs.length > 0 && this._repoId) {
                 try {
@@ -347,16 +371,33 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                         .map((d: any) => `--- ${d.file_path} ---\n${d.diff || ''}`)
                         .join('\n');
                     const impact = await api.analyzeImpact(this._repoId, changedFiles, codeChanges);
-                    const impactFormatted = formatImpactReport(impact);
-                    // Append to the same message (not a separate bubble)
-                    this.postMessage({
-                        type: 'MESSAGE_UPDATE',
-                        content: formatted + '\n\n---\n' + impactFormatted,
-                    });
+                    addendumSections.push(formatImpactReport(impact));
                 } catch (impactErr) {
                     // Impact analysis is non-critical — don't block on failure
                     console.warn('Impact analysis failed (non-critical):', impactErr);
                 }
+            }
+
+            // Feature 3: Auto-run evaluator after generation when diffs exist.
+            if (this._lastGeneratedDiffs.length > 0) {
+                try {
+                    const evaluation = await api.evaluateGeneration(
+                        requestWithContext,
+                        this._lastGeneratedDiffs,
+                        this._lastGeneratedTests,
+                        ''
+                    );
+                    addendumSections.push(formatEvaluationReport(evaluation));
+                } catch (evaluationErr) {
+                    console.warn('Evaluation failed (non-critical):', evaluationErr);
+                }
+            }
+
+            if (addendumSections.length > 0) {
+                this.postMessage({
+                    type: 'MESSAGE_UPDATE',
+                    content: formatted + '\n\n---\n' + addendumSections.join('\n\n---\n'),
+                });
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
@@ -371,6 +412,84 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 content: refusal,
             });
             this.postMessage({ type: 'ERROR_TOAST', message });
+        } finally {
+            this.postMessage({ type: 'LOADING', loading: false });
+        }
+    }
+
+    /**
+     * Handle /refine command (iterative test-driven refinement)
+     */
+    private async _handleRefine(request: string): Promise<void> {
+        if (!this._repoId) {
+            this.postMessage({ type: 'ERROR_TOAST', message: 'No repository indexed.' });
+            return;
+        }
+        if (!request.trim()) {
+            this.postMessage({ type: 'ERROR_TOAST', message: 'Usage: /refine <request>' });
+            return;
+        }
+
+        this.postMessage({ type: 'LOADING', loading: true });
+        try {
+            const response = await api.refineCode(this._repoId, request.trim());
+            this._lastGenerationRequest = request.trim();
+            if (response.final_tests) {
+                this._lastGeneratedTests = response.final_tests;
+            }
+
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content: formatRefinementReport(response),
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Refinement failed';
+            this.postMessage({ type: 'ERROR_TOAST', message });
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content: `❌ ${message}`,
+            });
+        } finally {
+            this.postMessage({ type: 'LOADING', loading: false });
+        }
+    }
+
+    /**
+     * Handle /evaluate command (evaluate latest generated diffs)
+     */
+    private async _handleEvaluate(requestText: string): Promise<void> {
+        if (this._lastGeneratedDiffs.length === 0) {
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content: 'No generated diffs found. Run `/generate ...` first, then `/evaluate`.',
+            });
+            return;
+        }
+
+        this.postMessage({ type: 'LOADING', loading: true });
+        try {
+            const evaluation = await api.evaluateGeneration(
+                requestText || this._lastGenerationRequest || 'Evaluate latest generated code',
+                this._lastGeneratedDiffs,
+                this._lastGeneratedTests,
+                ''
+            );
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content: formatEvaluationReport(evaluation),
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Evaluation failed';
+            this.postMessage({ type: 'ERROR_TOAST', message });
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content: `❌ ${message}`,
+            });
         } finally {
             this.postMessage({ type: 'LOADING', loading: false });
         }
