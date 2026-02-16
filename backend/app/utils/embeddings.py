@@ -37,6 +37,11 @@ GEMINI_429_MAX_RETRIES = 3
 # Ollama - small batches to avoid timeouts on consumer hardware
 OLLAMA_BATCH_SIZE = 50  # texts per API call (all-minilm is fast enough for 50)
 
+# all-minilm has a ~256 token context window (~500 chars).
+# Pre-truncate texts to avoid noisy HTTP 400 retries.
+OLLAMA_MINILM_MAX_CHARS = 500
+OLLAMA_NOMIC_MAX_CHARS = 8000  # nomic-embed-text supports 8192 tokens
+
 
 class EmbeddingService:
     """Generates embeddings for text chunks.
@@ -195,13 +200,39 @@ class EmbeddingService:
         """Get embeddings from local Ollama. No rate limits, fast.
         
         Uses small batches and per-text fallback to handle slow hardware gracefully.
+        Pre-truncates texts to avoid HTTP 400 context-length errors with small models.
         """
+        # Pre-truncate to avoid noisy 400 retries
+        model_lower = (self.ollama_embed_model or "").lower()
+        if "nomic" in model_lower:
+            max_chars = OLLAMA_NOMIC_MAX_CHARS
+        else:
+            max_chars = OLLAMA_MINILM_MAX_CHARS
+        
+        truncated_count = 0
+        processed_texts: List[str] = []
+        for t in texts:
+            if len(t) > max_chars:
+                processed_texts.append(self._truncate_text(t, max_chars))
+                truncated_count += 1
+            else:
+                processed_texts.append(t)
+        
+        if truncated_count > 0:
+            logger.info(
+                "ollama_embed_pre_truncated",
+                model=self.ollama_embed_model,
+                truncated=truncated_count,
+                total=len(texts),
+                max_chars=max_chars,
+            )
+        
         all_embeddings: List[List[float]] = []
-        total_batches = (len(texts) + OLLAMA_BATCH_SIZE - 1) // OLLAMA_BATCH_SIZE
+        total_batches = (len(processed_texts) + OLLAMA_BATCH_SIZE - 1) // OLLAMA_BATCH_SIZE
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
-            for i in range(0, len(texts), OLLAMA_BATCH_SIZE):
-                sub_batch = texts[i:i + OLLAMA_BATCH_SIZE]
+            for i in range(0, len(processed_texts), OLLAMA_BATCH_SIZE):
+                sub_batch = processed_texts[i:i + OLLAMA_BATCH_SIZE]
                 batch_num = (i // OLLAMA_BATCH_SIZE) + 1
 
                 try:

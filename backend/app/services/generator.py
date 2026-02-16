@@ -156,7 +156,7 @@ CRITICAL:
         ]
         
         try:
-            response_text = await llm.chat_completion(messages, json_mode=True, max_tokens=1024)
+            response_text = await llm.chat_completion(messages, json_mode=True, max_tokens=4096)
             # Clean up markdown code blocks if present
             clean_text = response_text.strip()
             if clean_text.startswith("```"):
@@ -170,16 +170,39 @@ CRITICAL:
             try:
                 data = json.loads(clean_text)
             except json.JSONDecodeError:
-                # Try simple regex fallback for plan/changes matching if strict parsing fails
+                # JSON may have been truncated by max_tokens — attempt repair
                 import re
-                plan_match = re.search(r'"plan":\s*"(.*?)(?<!\\)"', clean_text, re.DOTALL)
-                plan = plan_match.group(1) if plan_match else "Error parsing plan"
-                data = {
-                    "plan": plan,
-                    "changes": [],
-                    "test_file_content": "",
-                    "paste_instructions": [],
-                }
+                logger.warning("generate_json_parse_failed_attempting_repair",
+                               raw_len=len(clean_text))
+                
+                # Try to repair truncated JSON by closing open structures
+                repaired = clean_text.rstrip()
+                # Remove trailing incomplete string value
+                repaired = re.sub(r',\s*"[^"]*$', '', repaired)
+                # Close any open strings, arrays, objects
+                open_braces = repaired.count('{') - repaired.count('}')
+                open_brackets = repaired.count('[') - repaired.count(']')
+                # If we're inside a string, close it
+                if repaired.count('"') % 2 != 0:
+                    repaired += '"'
+                for _ in range(open_brackets):
+                    repaired += ']'
+                for _ in range(open_braces):
+                    repaired += '}'
+                
+                try:
+                    data = json.loads(repaired)
+                    logger.info("generate_json_repair_success")
+                except json.JSONDecodeError:
+                    # Last resort: regex extraction
+                    plan_match = re.search(r'"plan":\s*"(.*?)(?<!\\)"', clean_text, re.DOTALL)
+                    plan = plan_match.group(1) if plan_match else "Error parsing plan"
+                    data = {
+                        "plan": plan,
+                        "changes": [],
+                        "test_file_content": "",
+                        "paste_instructions": [],
+                    }
             
             # Helper to extract patterns if missing
             if "patterns_followed" not in data or not data["patterns_followed"]:

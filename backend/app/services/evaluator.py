@@ -143,8 +143,9 @@ Return JSON with this schema:
         if not code_bundle.strip():
             return self._disabled_result("No generated diffs to evaluate.")
 
+        # Critic = Model A (1.5b), Defender = Model B (3b) — both local Ollama, no Gemini
         critic_provider = "ollama"
-        defender_provider = "gemini" if settings.gemini_api_key else "ollama_b"
+        defender_provider = "ollama_b"
 
         critic_task = self._run_reviewer(
             prompt_template=self.CRITIC_PROMPT,
