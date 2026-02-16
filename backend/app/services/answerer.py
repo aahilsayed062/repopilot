@@ -51,25 +51,24 @@ class Answerer:
     Generates structured answers grounded in retrieved repository chunks.
     """
 
-    MAX_CONTENT_LENGTH = 400
+    MAX_CONTENT_LENGTH = 1500
     MAX_CITATIONS = 4
 
-    SYSTEM_PROMPT = """You are RepoPilot, an evidence-grounded code assistant.
+    SYSTEM_PROMPT = """You are RepoPilot, a code assistant that answers questions about repositories.
 
 Rules:
-1) Use ONLY the provided context. Every claim must cite a source.
-2) If evidence is insufficient, say so clearly.
-3) Be direct, technical, and concise.
-4) Return valid JSON:
-{
-  "answer": "Markdown with ## Short Answer, ## Evidence From Code, ## Practical Next Step",
-  "citations": [{"file_path": "path", "line_range": "L10-L20", "snippet": "short", "why": "reason"}],
-  "confidence": "high|medium|low",
-  "assumptions": []
-}
+1. Use ONLY the provided source code context to answer. Cite sources as [S1], [S2], etc.
+2. If the code context is not enough, say so honestly.
+3. Be direct, technical, and helpful.
 
-- Cite source ids [S1], [S2] in evidence bullets.
-- Never output placeholder or template text.
+Always respond with this JSON format:
+{"answer": "your answer here using markdown", "confidence": "high or medium or low", "citations": [{"file_path": "file.py", "line_range": "L1-L50", "why": "reason"}]}
+"""
+
+    SYSTEM_PROMPT_STREAM = """You are RepoPilot, a code assistant.
+Answer the question using ONLY the provided context.
+If you use code from the context, cite it like [S1], [S2].
+Do not use JSON. Write directly in Markdown.
 """
 
     TEMPLATE_LEAK_MARKERS = (
@@ -463,6 +462,58 @@ Rules:
                 confidence=AnswerConfidence.LOW,
                 assumptions=[str(e)],
             )
+
+    async def answer_stream(
+        self,
+        query: str,
+        chunks: List[Chunk],
+        conversation_context: str = "",
+    ):
+        """
+        Stream an answer grounded in retrieved chunks.
+        """
+        context_parts = []
+        for i, chunk in enumerate(chunks[: self.MAX_CITATIONS], start=1):
+            source_id = f"S{i}"
+            content = chunk.content
+            if len(content) > self.MAX_CONTENT_LENGTH:
+                content = content[: self.MAX_CONTENT_LENGTH] + "... [truncated]"
+
+            context_parts.append(
+                f"[{source_id}]\n"
+                f"File: {chunk.file_path}\n"
+                f"Lines: {chunk.line_range}\n"
+                f"Content:\n{content}\n"
+            )
+
+        context_str = "\n---\n".join(context_parts)
+        user_prompt = f"Context:\n{context_str}\n\nQuestion: {query}"
+        if conversation_context:
+            user_prompt = (
+                f"Context:\n{context_str}\n\n"
+                f"Recent conversation context:\n{conversation_context}\n\n"
+                f"Question: {query}"
+            )
+        
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT_STREAM},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            # First, check if there are no chunks
+            if not chunks:
+                yield "I don't have enough repository evidence yet to answer this safely.\n\n"
+                yield "- No repository chunks matched the question.\n"
+                yield "- Try re-indexing or asking with a specific file path."
+                return
+
+            async for chunk in llm.chat_completion_stream(messages, json_mode=False):
+                yield chunk
+                
+        except Exception as e:
+            logger.error("answer_stream_failed", error=str(e))
+            yield f"\n[Error: {str(e)}]"
 
 
 # Global instance

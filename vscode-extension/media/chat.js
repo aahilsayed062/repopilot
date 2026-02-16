@@ -234,6 +234,31 @@
         saveCurrentSession();
     }
 
+    function updateLastMessage(content, citations) {
+        const lastMsg = messagesContainer.lastElementChild;
+        if (!lastMsg || !lastMsg.classList.contains('assistant')) {
+            addMessage('assistant', content, citations);
+            return;
+        }
+
+        const contentDiv = lastMsg.querySelector('.msg-content');
+        if (contentDiv) {
+            // Preserve header
+            const header = lastMsg.querySelector('.msg-header');
+            let html = '';
+            if (header) html += header.outerHTML;
+
+            html += '<div class="msg-content">' + parseMarkdown(content) + '</div>';
+
+            // Re-add citations/buttons if they existed or are new?
+            // Simplified: rebuild content div + citations
+            contentDiv.innerHTML = parseMarkdown(content);
+        }
+
+        scrollToBottom();
+        saveCurrentSession();
+    }
+
     // ── Markdown Parser ───────────────────────────────────────
     function parseMarkdown(text) {
         if (!text) return '';
@@ -729,6 +754,9 @@
                 break;
             case 'MESSAGE_APPEND':
                 addMessage(msg.role, msg.content, msg.citations, msg.buttons);
+                break;
+            case 'MESSAGE_UPDATE':
+                updateLastMessage(msg.content, msg.citations);
                 break;
             case 'LOADING':
                 setLoading(msg.loading);

@@ -100,6 +100,7 @@ export interface GenerationRequest {
 export interface FileDiff {
     file_path: string;
     content?: string;
+    code?: string;
     diff: string;
 }
 
@@ -155,6 +156,7 @@ export type WebviewToExtensionMessage =
 export type ExtensionToWebviewMessage =
     | { type: 'STATUS_UPDATE'; status: IndexingStatus; repoId?: string; repoName?: string }
     | { type: 'MESSAGE_APPEND'; role: 'user' | 'assistant' | 'system'; content: string; citations?: Citation[]; buttons?: { label: string; action: string }[] }
+    | { type: 'MESSAGE_UPDATE'; content: string; citations?: Citation[] }
     | { type: 'MESSAGE_CLEAR' }
     | { type: 'ERROR_TOAST'; message: string }
     | { type: 'LOADING'; loading: boolean }

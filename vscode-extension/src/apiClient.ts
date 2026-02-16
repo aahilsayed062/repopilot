@@ -338,3 +338,68 @@ export async function loadAndIndexRepo(
 
     throw new ApiError('Indexing timeout. Please try again.');
 }
+
+/**
+ * Stream a question about the repository
+ */
+export async function* streamChat(
+    repoId: string,
+    question: string
+): AsyncGenerator<string, void, unknown> {
+    const baseUrl = getBackendUrl();
+    const url = `${baseUrl}/chat/stream`;
+
+    // We can't use the generic fetchJson because we need the raw stream
+    const body: ChatRequest = {
+        repo_id: repoId,
+        question,
+        decompose: true,
+    };
+
+    const controller = new AbortController();
+    // const timeout = setTimeout(() => controller.abort(), 120000); 
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+
+        // clearTimeout(timeout);
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        if (!response.body) throw new Error('No response body');
+
+        // Node.js fetch (v18+) returns a ReadableStream (Web Streams API)
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6); // Do not trim! Preserves leading spaces.
+                    if (data.trim() === '[DONE]') return; // Check trimmed for protocol messages
+                    if (data.startsWith('[ERROR]')) throw new Error(data.slice(7));
+                    // Unescape newlines
+                    yield data.replace(/\\n/g, '\n');
+                }
+            }
+        }
+
+    } catch (error) {
+        throw error;
+    }
+}

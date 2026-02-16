@@ -42,34 +42,12 @@ class Generator:
     Generates code changes and tests.
     """
     
-    SYSTEM_PROMPT = """You are RepoPilot, a senior software engineer.
-Your task is to produce implementation-ready code changes grounded in repository context.
+    SYSTEM_PROMPT = """You are RepoPilot, a code assistant. Write code based on the user's request.
 
-Return ONLY valid JSON with this exact schema:
-{
-  "plan": "Markdown with sections: ## Direct Solution, ## Why This Approach, ## Paste Guide",
-  "patterns_followed": ["List specific repository patterns you followed"],
-  "changes": [
-    {
-      "file_path": "relative/path/to/file.ext",
-      "where_to_paste": "Exact placement guidance (e.g., replace function X, insert after line containing Y)",
-      "code": "Copy-paste-ready final code snippet for that location",
-      "diff": "Unified diff showing the same change"
-    }
-  ],
-  "paste_instructions": [
-    "1) path + exact anchor + what to replace/insert",
-    "2) ... for each file"
-  ],
-  "test_file_content": "Optional test code"
-}
+Respond with JSON:
+{"plan": "brief description of what you will implement", "changes": [{"file_path": "filename.py", "code": "the actual complete code here", "diff": "summary of changes"}], "test_file_content": "test code if applicable"}
 
-Rules:
-- Use ONLY provided repository context.
-- Keep code clean, correct, and directly usable.
-- If context is insufficient, explicitly say so in plan and keep changes empty.
-- For each change, provide exact placement instructions and copy-ready code.
-- Match repository naming, structure, style, and error-handling patterns.
+IMPORTANT: Write REAL working code in the "code" field. Do NOT write descriptions or placeholders.
 """
 
     COMPLEXITY_MARKERS = (
@@ -134,7 +112,7 @@ Rules:
         logger.info("generating_code_start", repo_id=repo_id, request=request)
         
         # 1. Retrieve Context
-        retrieval_k = 8 if self._is_complex_request(request) else 5
+        retrieval_k = 4 if self._is_complex_request(request) else 3
         retrieval_query = request
         recent_history = self._format_recent_history(chat_history or [], limit=5)
         if recent_history:
@@ -170,7 +148,7 @@ Rules:
         ]
         
         try:
-            response_text = await llm.chat_completion(messages, json_mode=True)
+            response_text = await llm.chat_completion(messages, json_mode=True, max_tokens=1024)
             # Clean up markdown code blocks if present
             clean_text = response_text.strip()
             if clean_text.startswith("```"):
@@ -254,8 +232,8 @@ Rules:
         for c in chunks:
             # Truncate content to avoid token overflow (keep larger than answerer for code gen)
             content = c.content
-            if len(content) > 1000:
-                content = content[:1000] + "... [truncated]"
+            if len(content) > 1500:
+                content = content[:1500] + "... [truncated]"
             
             parts.append(
                 f"File: {c.metadata.file_path}\n"

@@ -12,11 +12,11 @@ Note: Embeddings are handled separately in embeddings.py (uses Gemini)
 
 import os
 import asyncio
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, AsyncGenerator
 import backoff
 from openai import AsyncOpenAI, OpenAIError, RateLimitError
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai import types
 import httpx
 
 from app.config import settings
@@ -36,7 +36,7 @@ class LLMService:
 
     def __init__(self):
         self.openai_client = None
-        self.gemini_model = None
+        self.gemini_client = None
         self.provider = "mock"  # 'ollama', 'openai', 'gemini', or 'mock'
         self.ollama_base_url = settings.ollama_base_url
 
@@ -74,13 +74,10 @@ class LLMService:
             )
         # Priority 3: Gemini
         elif settings.gemini_api_key:
-            genai.configure(api_key=settings.gemini_api_key)
-            model_name = settings.gemini_chat_model or "gemini-2.0-flash"
-            if not model_name.startswith("models/"):
-                model_name = f"models/{model_name}"
-            self.gemini_model_name = model_name
+            self.gemini_client = genai.Client(api_key=settings.gemini_api_key)
+            self.gemini_model_name = settings.gemini_chat_model or "gemini-2.0-flash"
             self.provider = "gemini"
-            logger.info("llm_initialized", provider="Gemini", model=model_name)
+            logger.info("llm_initialized", provider="Gemini", model=self.gemini_model_name)
         else:
             logger.warning(
                 "llm_initialized", provider="mock", message="No API key or Ollama configured"
@@ -120,6 +117,7 @@ class LLMService:
         model: str = None,
         json_mode: bool = False,
         provider_override: Optional[str] = None,
+        max_tokens: int = 512,
     ) -> str:
         """
         Get completion from LLM.
@@ -137,9 +135,9 @@ class LLMService:
 
         try:
             if provider == "ollama":
-                return await self._call_ollama(messages, temperature, model or settings.ollama_model_a, json_mode)
+                return await self._call_ollama(messages, temperature, model or settings.ollama_model_a, json_mode, max_tokens)
             elif provider == "ollama_b":
-                return await self._call_ollama(messages, temperature, model or settings.ollama_model_b, json_mode)
+                return await self._call_ollama(messages, temperature, model or settings.ollama_model_b, json_mode, max_tokens)
             elif provider == "openai":
                 return await self._call_openai(messages, temperature, model, json_mode)
             elif provider == "gemini":
@@ -155,20 +153,56 @@ class LLMService:
                 if provider != "ollama" and provider != "ollama_b" and self._check_ollama_available():
                     logger.warning("llm_fallback_to_ollama", reason=str(e))
                     try:
-                        return await self._call_ollama(messages, temperature, settings.ollama_model_a, json_mode)
+                        return await self._call_ollama(messages, temperature, settings.ollama_model_a, json_mode, max_tokens)
                     except Exception as e2:
                         logger.error("ollama_fallback_failed", error=str(e2))
                 # Try Gemini fallback
                 if provider == "openai" and settings.gemini_api_key:
                     logger.warning("llm_fallback_to_gemini", reason=str(e))
                     try:
-                        genai.configure(api_key=settings.gemini_api_key)
+                        if not self.gemini_client:
+                            self.gemini_client = genai.Client(api_key=settings.gemini_api_key)
+                            self.gemini_model_name = settings.gemini_chat_model or "gemini-2.0-flash"
                         return await self._call_gemini(messages, temperature, json_mode)
                     except Exception as e2:
                         logger.error("gemini_fallback_failed", error=str(e2))
             raise
 
-    async def _call_ollama(self, messages, temperature, model, json_mode):
+    async def chat_completion_stream(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        model: str = None,
+        max_tokens: int = 512,
+        provider_override: Optional[str] = None,
+        json_mode: bool = False,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Stream completion from LLM. Yields chunks of text.
+        """
+        provider = provider_override or self.provider
+
+        if provider == "mock":
+            yield self._mock_chat(messages)
+            return
+
+        try:
+            if provider == "ollama":
+                async for chunk in self._call_ollama_stream(messages, temperature, model or settings.ollama_model_a, max_tokens, json_mode):
+                    yield chunk
+            elif provider == "ollama_b":
+                async for chunk in self._call_ollama_stream(messages, temperature, model or settings.ollama_model_b, max_tokens, json_mode):
+                    yield chunk
+            else:
+                # For non-streaming providers (or not yet implemented), fall back to non-streaming
+                full_response = await self.chat_completion(messages, temperature, model, json_mode, provider_override, max_tokens)
+                yield full_response
+
+        except Exception as e:
+            logger.error("llm_stream_failed", error=str(e), provider=provider)
+            yield f"\n[Error: {str(e)}]"
+
+    async def _call_ollama(self, messages, temperature, model, json_mode, max_tokens=512):
         """Call local Ollama API."""
         url = f"{self.ollama_base_url}/api/chat"
 
@@ -178,16 +212,51 @@ class LLMService:
             "stream": False,
             "options": {
                 "temperature": temperature,
+                "num_predict": max_tokens,
             }
         }
         if json_mode:
             payload["format"] = "json"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
             return data["message"]["content"]
+
+    async def _call_ollama_stream(self, messages, temperature, model, max_tokens, json_mode=False):
+        """Call local Ollama API in streaming mode."""
+        url = f"{self.ollama_base_url}/api/chat"
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            }
+        }
+        if json_mode:
+            payload["format"] = "json"
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
+            async with client.stream("POST", url, json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        import json
+                        data = json.loads(line)
+                        if "message" in data and "content" in data["message"]:
+                            content = data["message"]["content"]
+                            if content:
+                                yield content
+                        if data.get("done"):
+                            break
+                    except Exception:
+                        pass
 
     @backoff.on_exception(
         backoff.expo,
@@ -215,10 +284,10 @@ class LLMService:
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=2, max_time=10)
     async def _call_gemini(self, messages, temperature, json_mode):
-        # Translate OpenAI messages to Gemini history
+        """Call Gemini API using the new google-genai SDK."""
+        # Translate OpenAI messages to Gemini format
         system_instruction = None
-        history = []
-        last_user_message = ""
+        contents = []
 
         for msg in messages:
             role = msg["role"]
@@ -227,43 +296,56 @@ class LLMService:
             if role == "system":
                 system_instruction = content
             elif role == "user":
-                last_user_message = content
-                history.append({"role": "user", "parts": [content]})
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part(text=content)],
+                ))
             elif role == "assistant":
-                history.append({"role": "model", "parts": [content]})
+                contents.append(types.Content(
+                    role="model",
+                    parts=[types.Part(text=content)],
+                ))
 
-        # Pop the last user message to send it for generation
-        if history and history[-1]["role"] == "user":
-            history.pop()
+        # Build generation config
+        config_kwargs = {
+            "temperature": temperature,
+            "safety_settings": [
+                types.SafetySetting(
+                    category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                    threshold="OFF",
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_HARASSMENT",
+                    threshold="OFF",
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_HATE_SPEECH",
+                    threshold="OFF",
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    threshold="OFF",
+                ),
+            ],
+        }
 
-        gen_config = genai.GenerationConfig(
-            temperature=temperature,
-        )
+        if system_instruction:
+            config_kwargs["system_instruction"] = system_instruction
 
         if json_mode:
-            gen_config.response_mime_type = "application/json"
+            config_kwargs["response_mime_type"] = "application/json"
 
-        model_name = getattr(self, "gemini_model_name", "models/gemini-2.0-flash")
-        if not model_name.startswith("models/"):
-            model_name = f"models/{model_name}"
+        model_name = getattr(self, "gemini_model_name", "gemini-2.0-flash")
 
-        model = genai.GenerativeModel(
-            model_name=model_name, system_instruction=system_instruction
-        )
+        # Use the async client
+        client = self.gemini_client
+        if not client:
+            client = genai.Client(api_key=settings.gemini_api_key)
 
-        chat = model.start_chat(history=history)
-
-        # chat.send_message is synchronous -- run in thread to avoid blocking
-        response = await asyncio.to_thread(
-            chat.send_message,
-            last_user_message,
-            generation_config=gen_config,
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            },
+        response = await client.aio.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=types.GenerateContentConfig(**config_kwargs),
         )
 
         return response.text

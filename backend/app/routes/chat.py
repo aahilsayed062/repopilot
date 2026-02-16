@@ -6,6 +6,7 @@ import asyncio
 import re
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.models.chat import ChatRequest, ChatResponse, AnswerConfidence
@@ -338,6 +339,51 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
     except Exception as e:
         logger.exception("chat_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stream")
+async def stream_chat(request: ChatRequest):
+    """
+    Stream a grounded answer using Server-Sent Events (SSE).
+    """
+    async def event_generator():
+        try:
+            # 1. Retrieval (simplified version of /ask)
+            path_hint_chunks = await _retrieve_path_hint_chunks(request.repo_id, request.question)
+            
+            # Simple retrieval for speed
+            retrieval_k = 4
+            chunks = await retriever.retrieve(request.repo_id, request.question, k=retrieval_k)
+            
+            all_chunks = path_hint_chunks + chunks
+            
+            # Deduplicate
+            seen_ids = set()
+            unique_chunks = []
+            for c in all_chunks:
+                if c.metadata.chunk_id not in seen_ids:
+                    unique_chunks.append(c)
+                    seen_ids.add(c.metadata.chunk_id)
+            
+            # Yield retrieval status
+            # yield f"event: status\ndata: Found {len(unique_chunks)} relevant code chunks.\n\n"
+
+            # 2. Stream Answer
+            recent_context = _format_recent_history(request)
+            
+            async for token in answerer.answer_stream(request.question, unique_chunks[:4], recent_context):
+                # SSE format: data: <content>\n\n
+                # We sanitize newlines for SSE data protocol
+                sanitized = token.replace("\n", "\\n")
+                yield f"data: {sanitized}\n\n"
+            
+            yield "data: [DONE]\n\n"
+            
+        except Exception as e:
+            logger.error("stream_failed", error=str(e))
+            yield f"data: [ERROR] {str(e)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ───────────────────────────────────────────────────────────────────

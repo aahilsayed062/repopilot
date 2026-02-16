@@ -225,15 +225,28 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 questionWithContext = question + '\n\n[Referenced Files]\n' + this._pendingFileContext;
                 this._pendingFileContext = '';
             }
-            const response = await api.askQuestion(this._repoId, questionWithContext);
-            const formatted = formatChatResponse(response);
 
+            // Start with an empty message
             this.postMessage({
                 type: 'MESSAGE_APPEND',
                 role: 'assistant',
-                content: formatted,
-                citations: response.citations,
+                content: '',
             });
+
+            let fullContent = '';
+
+            // Stream the response
+            for await (const chunk of api.streamChat(this._repoId, questionWithContext)) {
+                fullContent += chunk;
+                this.postMessage({
+                    type: 'MESSAGE_UPDATE',
+                    content: fullContent,
+                });
+            }
+
+            // We don't have structured citations from the stream yet, 
+            // but the text contains [S1] etc. which is fine for now.
+
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
 
@@ -246,11 +259,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 'An error occurred while processing your request.',
                 ['Ensure the backend is running', 'Try re-indexing the workspace']
             );
+
+            // If we already started streaming, update the message with error
             this.postMessage({
-                type: 'MESSAGE_APPEND',
-                role: 'assistant',
-                content: refusal,
+                type: 'MESSAGE_UPDATE',
+                content: refusal + `\n\nError details: ${message}`,
             });
+
             this.postMessage({ type: 'ERROR_TOAST', message });
         } finally {
             this.postMessage({ type: 'LOADING', loading: false });
@@ -324,34 +339,51 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            this.postMessage({ type: 'ERROR_TOAST', message: 'No workspace open.' });
+            return;
+        }
+        const rootUri = workspaceFolders[0].uri;
+
         try {
-            const edit = new vscode.WorkspaceEdit();
-
+            let openedCount = 0;
             for (const diff of this._lastGeneratedDiffs) {
-                const uri = vscode.Uri.file(diff.file_path);
+                // Resolve path relative to workspace
+                let targetUri: vscode.Uri;
+                // Remove leading slash/backslash if present to ensure proper join
+                const cleanPath = diff.file_path.replace(/^[\/\\]/, '');
 
-                // Read the file to apply diff (simple replacement for now)
-                // In a real implementation, we should parse the diff.
-                // Since our backend returns full files in 'diff' sometimes or unified diffs, behavior depends.
-                // Assuming the backend returns a diff string, we can't just apply it blindly without a diff parser.
-                // BUT, if the backend returns the NEW content, we can replace.
-                // Checking types.ts: FileDiff { file_path: string; diff: string; }
+                if (path.isAbsolute(diff.file_path)) {
+                    targetUri = vscode.Uri.file(diff.file_path);
+                } else {
+                    targetUri = vscode.Uri.joinPath(rootUri, cleanPath);
+                }
 
-                // For this iteration, let's assume we can't perfectly apply unified diffs without a library.
-                // We'll show a warning or try basic replacement if it looks like a full file.
+                // If full code is provided, write it (Create/Overwrite)
+                const content = diff.code || diff.content;
+                if (content) {
+                    await vscode.workspace.fs.writeFile(targetUri, Buffer.from(content, 'utf-8'));
+                } else {
+                    // IF no code, maybe try to apply patch? For now just warn if file doesn't exist
+                    try {
+                        await vscode.workspace.fs.stat(targetUri);
+                    } catch {
+                        // File doesn't exist and no content to write
+                        this.postMessage({ type: 'ERROR_TOAST', message: `Cannot create ${cleanPath}: No content provided.` });
+                        continue;
+                    }
+                }
 
-                // IMPROVEMENT: For now, we will open the file and show the diff side-by-side?
-                // Or best effort: Just open the file.
-
-                // Actually, let's try to just open the file for now as "Apply" is complex.
-                // OR: create a new untitled file with the content?
-
-                // Let's implement a "Preview" instead.
-                const doc = await vscode.workspace.openTextDocument(uri);
-                await vscode.window.showTextDocument(doc);
+                // Open the file
+                const doc = await vscode.workspace.openTextDocument(targetUri);
+                await vscode.window.showTextDocument(doc, { preview: false });
+                openedCount++;
             }
 
-            vscode.window.showInformationMessage(`Opened ${this._lastGeneratedDiffs.length} files. Please review changes manually.`);
+            if (openedCount > 0) {
+                vscode.window.showInformationMessage(`Applied changes to ${openedCount} files.`);
+            }
 
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply changes';
