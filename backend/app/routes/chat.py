@@ -278,7 +278,7 @@ async def ask_question(request: ChatRequest) -> ChatResponse:
         if request.decompose or planner.should_decompose(request.question):
             try:
                 sub_questions = await asyncio.wait_for(
-                    planner.decompose(request.question), timeout=4.5
+                    planner.decompose(request.question), timeout=8.0
                 )
             except Exception:
                 sub_questions = None

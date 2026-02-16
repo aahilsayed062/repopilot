@@ -116,7 +116,8 @@ async function updateBackendUrlSetting(nextUrl: string): Promise<void> {
 async function fetchJson<T>(
     path: string,
     options: RequestInit = {},
-    timeoutMs: number = 15000
+    timeoutMs: number = 15000,
+    externalSignal?: AbortSignal
 ): Promise<T> {
     const baseUrl = getBackendUrl();
     const url = `${baseUrl}${path}`;
@@ -124,6 +125,16 @@ async function fetchJson<T>(
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        // If an external signal is provided, abort our controller when it fires
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                clearTimeout(timeout);
+                throw new ApiError('Request cancelled', undefined, false);
+            }
+            externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
+
         const response = await fetch(url, {
             ...options,
             signal: controller.signal,
@@ -332,7 +343,8 @@ export async function smartChat(
     repoId: string,
     question: string,
     chatHistory?: Array<{ role: string; content: string }>,
-    contextFileHints?: string[]
+    contextFileHints?: string[],
+    signal?: AbortSignal
 ): Promise<SmartChatResponse> {
     const body: SmartChatRequest = {
         repo_id: repoId,
@@ -344,7 +356,7 @@ export async function smartChat(
     return fetchJson<SmartChatResponse>('/chat/smart', {
         method: 'POST',
         body: JSON.stringify(body),
-    }, 180000); // 3 min — may run multiple agents
+    }, 180000, signal); // 3 min — may run multiple agents
 }
 
 /**
@@ -437,7 +449,8 @@ export async function loadAndIndexRepo(
  */
 export async function* streamChat(
     repoId: string,
-    question: string
+    question: string,
+    chatHistory?: Array<{ role: string; content: string }>
 ): AsyncGenerator<string, void, unknown> {
     const baseUrl = getBackendUrl();
     const url = `${baseUrl}/chat/stream`;
@@ -447,6 +460,7 @@ export async function* streamChat(
         repo_id: repoId,
         question,
         decompose: true,
+        chat_history: chatHistory,
     };
 
     const controller = new AbortController();

@@ -23,11 +23,14 @@ class Planner:
     def should_decompose(self, query: str) -> bool:
         """
         Heuristic gate to avoid unnecessary LLM decomposition latency.
+        Uses semantic markers (not just length) to decide.
         """
         q = (query or "").strip().lower()
         if not q:
             return False
-        if len(q) < 90:
+
+        # Short queries (<40 chars) are almost never complex enough
+        if len(q) < 40:
             return False
 
         complex_markers = [
@@ -44,12 +47,33 @@ class Planner:
             "security",
             "performance",
             "multi",
+            "overview",
+            "entire",
+            "whole system",
+            "full pipeline",
+            "walk me through",
+            "step by step",
+            "trace the",
+            "how does.*work together",
+            "all components",
+            "all modules",
+            "explain in detail",
         ]
-        return any(marker in q for marker in complex_markers)
+        import re
+        if any(re.search(marker, q) for marker in complex_markers):
+            return True
+
+        # Also decompose long queries (>15 words) with question-like structure
+        words = q.split()
+        if len(words) > 15:
+            return True
+
+        return False
     
     async def decompose(self, query: str) -> Optional[List[str]]:
         """
         Break down complex question into sub-questions using LLM.
+        Uses the more capable 3b model for better quality decomposition.
         """
         try:
             response = await llm.chat_completion(
@@ -57,7 +81,8 @@ class Planner:
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": query}
                 ],
-                json_mode=True
+                json_mode=True,
+                provider_override="ollama_b",  # Use 3b for better decomposition
             )
             
             data = json.loads(response)

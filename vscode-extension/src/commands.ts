@@ -41,10 +41,9 @@ export function registerCommands(
     // Internal trigger for index (called from command)
     context.subscriptions.push(
         vscode.commands.registerCommand('repopilot.triggerIndex', async () => {
-            // This sends a message to the webview which triggers indexing
-            // Actually, we need to call the panel's index method directly
-            // For now, we'll show a message telling user to click the button
-            vscode.window.showInformationMessage('Click "Index" in the RepoPilot chat panel to index your workspace.');
+            // Delegate to the panel's indexing handler via postMessage
+            chatPanel.postMessage({ type: 'MESSAGE_APPEND', role: 'system', content: 'Indexing workspace...' });
+            await chatPanel.indexWorkspace();
         })
     );
 
@@ -103,7 +102,8 @@ export function registerCommands(
     context.subscriptions.push(
         vscode.commands.registerCommand('repopilot.askAboutCode', async (code: string, name: string) => {
             await vscode.commands.executeCommand('repopilot.chatView.focus');
-            chatPanel.injectQuestion(`Explain the \`${name}\` function/class.`);
+            const snippet = code ? `\n\n\`\`\`\n${code.slice(0, 2000)}\n\`\`\`` : '';
+            chatPanel.injectQuestion(`Explain the \`${name}\` function/class.${snippet}`);
         })
     );
 }

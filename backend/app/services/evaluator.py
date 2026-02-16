@@ -115,10 +115,12 @@ Critic review JSON:
 Defender review JSON:
 {defender_json}
 
-Decision rules:
-- ACCEPT_ORIGINAL: code is good enough, only minor issues.
-- REQUEST_REVISION: major correctness/security concerns.
-- MERGE_FEEDBACK: acceptable but should apply concrete improvements.
+Decision rules (choose ONE):
+- ACCEPT_ORIGINAL: Both reviewers scored 8+ AND no security/correctness issues. Code is ready as-is.
+- MERGE_FEEDBACK: Average score is 5-7 OR reviewers found improvement opportunities that you can fix. You MUST provide the improved code in improved_code_by_file with concrete fixes applied.
+- REQUEST_REVISION: Average score below 5 OR critical security/correctness bugs that need major rework.
+
+IMPORTANT: Prefer MERGE_FEEDBACK when there are fixable issues. Only use ACCEPT_ORIGINAL for genuinely clean code. Only use REQUEST_REVISION for unfixable problems.
 
 Return JSON with this schema:
 {{
@@ -128,7 +130,7 @@ Return JSON with this schema:
   "confidence": 0-1 number,
   "merged_issues": ["merged issue"],
   "priority_fixes": ["ordered high-impact fix"],
-  "improved_code_by_file": [{{"file_path":"...", "code":"..."}}]
+  "improved_code_by_file": [{{"file_path":"...", "code":"full improved file content"}}]
 }}"""
 
     async def evaluate_generation(
@@ -294,7 +296,14 @@ Return JSON with this schema:
     ) -> ControllerVerdict:
         scores = [r.score for r in (critic, defender) if r is not None]
         final_score = sum(scores) / len(scores) if scores else 0.0
-        decision = "ACCEPT_ORIGINAL" if final_score >= 7.5 else "REQUEST_REVISION"
+
+        # Three-tier decision: ACCEPT (8+), MERGE (5-7.9), REVISION (<5)
+        if final_score >= 8.0:
+            decision = "ACCEPT_ORIGINAL"
+        elif final_score >= 5.0:
+            decision = "MERGE_FEEDBACK"
+        else:
+            decision = "REQUEST_REVISION"
 
         merged_issues: List[str] = []
         if critic:
@@ -312,7 +321,7 @@ Return JSON with this schema:
 
         return ControllerVerdict(
             decision=decision,
-            reasoning="Controller fallback used because controller evaluation failed.",
+            reasoning=f"Controller fallback: avg score {final_score:.1f} → {decision}",
             final_score=round(final_score, 2),
             confidence=confidence,
             merged_issues=merged_issues,
@@ -411,10 +420,17 @@ Return JSON with this schema:
 
     @staticmethod
     def _normalize_decision(decision: str) -> str:
-        clean = (decision or "").strip().upper()
+        clean = (decision or "").strip().upper().replace(" ", "_")
         if clean in {"ACCEPT_ORIGINAL", "REQUEST_REVISION", "MERGE_FEEDBACK"}:
             return clean
-        return "REQUEST_REVISION"
+        # Fuzzy matching for partial/mangled LLM output
+        if "ACCEPT" in clean:
+            return "ACCEPT_ORIGINAL"
+        if "MERGE" in clean or "FEEDBACK" in clean:
+            return "MERGE_FEEDBACK"
+        if "REVIS" in clean or "REJECT" in clean:
+            return "REQUEST_REVISION"
+        return "MERGE_FEEDBACK"  # safe middle-ground default
 
 
 evaluator = CodeEvaluator()

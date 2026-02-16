@@ -48,6 +48,9 @@
     let mentionSelectedIdx = 0;
     let mentionedFiles = []; // files mentioned in current message
 
+    // Pending send: holds the message to send after file context is ready
+    let pendingSend = null;
+
     const statusLabels = {
         'not_connected': 'Disconnected',
         'not_indexed': 'Not Indexed',
@@ -201,61 +204,8 @@
             // Post-process: inject per-file Accept/Reject buttons after each file's diff
             injectPerFileButtons(msgDiv);
 
-            // Bind citation clicks
-            msgDiv.querySelectorAll('.citation-chip').forEach(function (chip) {
-                chip.addEventListener('click', function () {
-                    const filePath = chip.getAttribute('data-path');
-                    const range = chip.getAttribute('data-range');
-                    let startLine, endLine;
-                    if (range) {
-                        const match = range.match(/(\d+)(?:-(\d+))?/);
-                        if (match) {
-                            startLine = parseInt(match[1]);
-                            endLine = match[2] ? parseInt(match[2]) : startLine;
-                        }
-                    }
-                    vscode.postMessage({ type: 'OPEN_CITATION', file_path: filePath, start_line: startLine, end_line: endLine });
-                });
-            });
-
-            // Bind action buttons (Accept All, Run Tests, etc.)
-            msgDiv.querySelectorAll('.msg-action-btn').forEach(function (btn) {
-                btn.addEventListener('click', function () {
-                    vscode.postMessage({ type: btn.getAttribute('data-action') });
-                });
-            });
-
-            // Bind per-file accept/reject buttons
-            msgDiv.querySelectorAll('.file-accept-btn').forEach(function (btn) {
-                btn.addEventListener('click', function () {
-                    var filePath = btn.getAttribute('data-file');
-                    vscode.postMessage({ type: 'ACCEPT_FILE', file_path: filePath });
-                    btn.closest('.file-action-bar').style.opacity = '0.4';
-                    btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--success,#48bb78);font-size:11px">✅ Applied</span>';
-                });
-            });
-            msgDiv.querySelectorAll('.file-reject-btn').forEach(function (btn) {
-                btn.addEventListener('click', function () {
-                    var filePath = btn.getAttribute('data-file');
-                    vscode.postMessage({ type: 'REJECT_FILE', file_path: filePath });
-                    btn.closest('.file-action-bar').style.opacity = '0.4';
-                    btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--error,#e53e3e);font-size:11px">❌ Skipped</span>';
-                });
-            });
-
-            // Bind copy buttons
-            msgDiv.querySelectorAll('.copy-btn').forEach(function (btn) {
-                btn.addEventListener('click', function () {
-                    const codeEl = btn.closest('.code-block').querySelector('.code-content code');
-                    if (codeEl) {
-                        navigator.clipboard.writeText(codeEl.textContent).then(function () {
-                            const orig = btn.innerHTML;
-                            btn.innerHTML = '✓ Copied';
-                            setTimeout(function () { btn.innerHTML = orig; }, 1500);
-                        });
-                    }
-                });
-            });
+            // Bind all interactive listeners (citations, buttons, copy, accept/reject)
+            bindMessageListeners(msgDiv);
 
         } else if (role === 'system') {
             msgDiv.innerHTML = '<div class="msg-content">' + parseMarkdown(content) + '</div>';
@@ -275,16 +225,25 @@
 
         const contentDiv = lastMsg.querySelector('.msg-content');
         if (contentDiv) {
-            // Preserve header
-            const header = lastMsg.querySelector('.msg-header');
-            let html = '';
-            if (header) html += header.outerHTML;
-
-            html += '<div class="msg-content">' + parseMarkdown(content) + '</div>';
-
-            // Re-add citations/buttons if they existed or are new?
-            // Simplified: rebuild content div + citations
+            // Rebuild content
             contentDiv.innerHTML = parseMarkdown(content);
+
+            // Re-add citations if provided
+            if (citations && citations.length > 0) {
+                var citHtml = '<div class="citations">';
+                citations.forEach(function (cit) {
+                    var label = cit.file_path + (cit.line_range ? ':' + cit.line_range : '');
+                    citHtml += '<span class="citation-chip" data-path="' + escapeAttr(cit.file_path) +
+                        '" data-range="' + escapeAttr(cit.line_range || '') + '">' +
+                        SVG.file + ' ' + escapeHtml(label) + '</span>';
+                });
+                citHtml += '</div>';
+                contentDiv.innerHTML += citHtml;
+            }
+
+            // Re-inject per-file buttons and rebind ALL listeners on this message
+            injectPerFileButtons(lastMsg);
+            bindMessageListeners(lastMsg);
         }
 
         scrollToBottom();
@@ -356,6 +315,70 @@
                 // Insert after code block
                 next.parentNode.insertBefore(bar, next.nextSibling);
             }
+        });
+    }
+
+    /**
+     * Bind all interactive listeners within a message container.
+     * Used after addMessage, updateLastMessage, and loadSession.
+     */
+    function bindMessageListeners(container) {
+        // Citation clicks
+        container.querySelectorAll('.citation-chip').forEach(function (chip) {
+            chip.addEventListener('click', function () {
+                var filePath = chip.getAttribute('data-path');
+                var range = chip.getAttribute('data-range');
+                var startLine, endLine;
+                if (range) {
+                    var match = range.match(/(\d+)(?:-(\d+))?/);
+                    if (match) {
+                        startLine = parseInt(match[1]);
+                        endLine = match[2] ? parseInt(match[2]) : startLine;
+                    }
+                }
+                vscode.postMessage({ type: 'OPEN_CITATION', file_path: filePath, start_line: startLine, end_line: endLine });
+            });
+        });
+
+        // Action buttons (Accept All, Run Tests, etc.)
+        container.querySelectorAll('.msg-action-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                vscode.postMessage({ type: btn.getAttribute('data-action') });
+            });
+        });
+
+        // Per-file accept buttons
+        container.querySelectorAll('.file-accept-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var filePath = btn.getAttribute('data-file');
+                vscode.postMessage({ type: 'ACCEPT_FILE', file_path: filePath });
+                btn.closest('.file-action-bar').style.opacity = '0.4';
+                btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--success,#48bb78);font-size:11px">✅ Applied</span>';
+            });
+        });
+
+        // Per-file reject buttons
+        container.querySelectorAll('.file-reject-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var filePath = btn.getAttribute('data-file');
+                vscode.postMessage({ type: 'REJECT_FILE', file_path: filePath });
+                btn.closest('.file-action-bar').style.opacity = '0.4';
+                btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--error,#e53e3e);font-size:11px">❌ Skipped</span>';
+            });
+        });
+
+        // Copy buttons
+        container.querySelectorAll('.copy-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var codeEl = btn.closest('.code-block').querySelector('.code-content code');
+                if (codeEl) {
+                    navigator.clipboard.writeText(codeEl.textContent).then(function () {
+                        var orig = btn.innerHTML;
+                        btn.innerHTML = '✓ Copied';
+                        setTimeout(function () { btn.innerHTML = orig; }, 1500);
+                    });
+                }
+            });
         });
     }
 
@@ -456,38 +479,13 @@
     }
 
     function rebindMessageListeners() {
-        messagesContainer.querySelectorAll('.citation-chip').forEach(function (chip) {
-            chip.addEventListener('click', function () {
-                var filePath = chip.getAttribute('data-path');
-                var range = chip.getAttribute('data-range');
-                var startLine, endLine;
-                if (range) {
-                    var match = range.match(/(\d+)(?:-(\d+))?/);
-                    if (match) {
-                        startLine = parseInt(match[1]);
-                        endLine = match[2] ? parseInt(match[2]) : startLine;
-                    }
-                }
-                vscode.postMessage({ type: 'OPEN_CITATION', file_path: filePath, start_line: startLine, end_line: endLine });
-            });
+        // Rebind all interactive elements across all messages
+        bindMessageListeners(messagesContainer);
+        // Also re-inject per-file buttons for loaded sessions
+        messagesContainer.querySelectorAll('.message.assistant').forEach(function (msg) {
+            injectPerFileButtons(msg);
         });
-        messagesContainer.querySelectorAll('.msg-action-btn').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                vscode.postMessage({ type: btn.getAttribute('data-action') });
-            });
-        });
-        messagesContainer.querySelectorAll('.copy-btn').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                var codeEl = btn.closest('.code-block').querySelector('.code-content code');
-                if (codeEl) {
-                    navigator.clipboard.writeText(codeEl.textContent).then(function () {
-                        var orig = btn.innerHTML;
-                        btn.innerHTML = '✓ Copied';
-                        setTimeout(function () { btn.innerHTML = orig; }, 1500);
-                    });
-                }
-            });
-        });
+        bindMessageListeners(messagesContainer);
     }
 
     function getTimeAgo(ts) {
@@ -536,25 +534,31 @@
             fileMentions.push(match[1]);
         }
 
-        // If files are mentioned, request their content from extension
-        if (fileMentions.length > 0) {
-            vscode.postMessage({ type: 'REQUEST_FILE_CONTEXT', files: fileMentions });
+        // Determine the message type and payload
+        var msgPayload;
+        if (text.startsWith('/generate ')) {
+            msgPayload = { type: 'GENERATE', request: text.substring(10) };
+        } else if (text.startsWith('/refine ')) {
+            msgPayload = { type: 'REFINE', request: text.substring(8) };
+        } else {
+            msgPayload = { type: 'ASK', question: text };
         }
 
-        if (text.startsWith('/generate ')) {
-            addMessage('user', text);
-            vscode.postMessage({ type: 'GENERATE', request: text.substring(10) });
-        } else if (text.startsWith('/refine ')) {
-            addMessage('user', text);
-            vscode.postMessage({ type: 'REFINE', request: text.substring(8) });
-        } else {
-            addMessage('user', text);
-            vscode.postMessage({ type: 'ASK', question: text });
-        }
+        // Show user message immediately
+        addMessage('user', text);
         inputEl.value = '';
         mentionedFiles = [];
         autoResizeInput();
         closeMentionDropdown();
+
+        // If files are mentioned, request context first and defer the send
+        if (fileMentions.length > 0) {
+            pendingSend = msgPayload;
+            vscode.postMessage({ type: 'REQUEST_FILE_CONTEXT', files: fileMentions });
+        } else {
+            // No mentions — send immediately
+            vscode.postMessage(msgPayload);
+        }
     }
 
     function autoResizeInput() {
@@ -771,13 +775,8 @@
 
     // Export
     if (exportBtn) exportBtn.addEventListener('click', function () {
-        var content = '# RepoPilot Chat Export\n\n';
-        messagesContainer.querySelectorAll('.message').forEach(function (msg) {
-            var role = msg.classList.contains('user') ? 'User' : msg.classList.contains('assistant') ? 'RepoPilot' : 'System';
-            var contentEl = msg.querySelector('.msg-content');
-            if (contentEl) content += '**' + role + ':** ' + contentEl.textContent + '\n\n---\n\n';
-        });
-        vscode.postMessage({ type: 'SAVE_CHAT', content: content });
+        // Request export from extension (which has raw markdown history)
+        vscode.postMessage({ type: 'EXPORT_CHAT' });
         toggleSettings(false);
     });
 
@@ -842,13 +841,20 @@
                 showErrorToast(msg.message);
                 break;
             case 'EXPORT_REQUEST':
-                // Triggered by extension command
-                if (exportBtn) exportBtn.click();
+                // Triggered by extension command — use extension-side export
+                vscode.postMessage({ type: 'EXPORT_CHAT' });
                 break;
             case 'FILE_LIST':
                 // Receive workspace file list for @ mentions
                 if (msg.files && Array.isArray(msg.files)) {
                     workspaceFiles = msg.files;
+                }
+                break;
+            case 'FILE_CONTEXT_READY':
+                // File context has been loaded — now send the deferred message
+                if (pendingSend) {
+                    vscode.postMessage(pendingSend);
+                    pendingSend = null;
                 }
                 break;
         }

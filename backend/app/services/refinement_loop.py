@@ -6,7 +6,7 @@ Round 2 Feature: Self-correcting code generation with automated test verificatio
 """
 import asyncio
 import json
-import subprocess
+import sys
 import tempfile
 import os
 from typing import Optional, List
@@ -233,16 +233,29 @@ Return JSON:
                 f.write(test_with_import)
 
             try:
-                result = subprocess.run(
-                    ["python", "-m", "pytest", test_file,
-                     "-v", "--tb=short", "--no-header"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "pytest", test_file,
+                    "-v", "--tb=short", "--no-header",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                     cwd=tmpdir,
                 )
-                output = result.stdout + result.stderr
-                passed = result.returncode == 0
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(), timeout=30
+                    )
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.communicate()
+                    return (
+                        "Test execution timed out (30s limit)",
+                        False,
+                        ["Timeout"],
+                    )
+
+                output = (stdout_bytes or b"").decode("utf-8", errors="replace") + \
+                         (stderr_bytes or b"").decode("utf-8", errors="replace")
+                passed = proc.returncode == 0
 
                 # Extract failure lines
                 failures: List[str] = []
@@ -256,12 +269,6 @@ Return JSON:
 
                 return output, passed, failures
 
-            except subprocess.TimeoutExpired:
-                return (
-                    "Test execution timed out (30s limit)",
-                    False,
-                    ["Timeout"],
-                )
             except FileNotFoundError:
                 return (
                     "pytest not found — install with: pip install pytest",

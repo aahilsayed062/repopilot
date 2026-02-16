@@ -186,6 +186,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 await this._handleSaveChat(message.content);
                 break;
 
+            case 'EXPORT_CHAT':
+                await this._handleExportFromHistory();
+                break;
+
             case 'APPLY_CHANGES':
                 await this._handleApplyChanges();
                 break;
@@ -240,6 +244,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: 'LOADING', loading: true });
         this._abortController = new AbortController();
 
+        // Clear stale diffs/tests from previous requests to prevent
+        // Accept buttons applying code from an old generation
+        this._lastGeneratedDiffs = [];
+        this._lastGeneratedTests = '';
+
         try {
             // Include any pending file context
             let questionWithContext = question;
@@ -248,6 +257,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 questionWithContext = question + '\n\n[Referenced Files]\n' + this._pendingFileContext;
                 this._pendingFileContext = '';
             }
+
+            // Build chat_history from _history for context continuity
+            const chatHistory = this._history
+                .filter(m => m.type === 'MESSAGE_APPEND' && (m.role === 'user' || m.role === 'assistant'))
+                .slice(-10)  // last 5 turns (user+assistant pairs)
+                .map(m => ({ role: (m as any).role as string, content: ((m as any).content as string || '').slice(0, 500) }));
 
             // Heuristic: simple explain/question queries → stream for better UX
             const GEN_KEYWORDS = /\b(add|create|modify|implement|generate|write|build|fix|refactor|change|update|delete|remove|rename|move|extract|convert|replace|insert|make)\b/i;
@@ -262,8 +277,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 });
 
                 let accumulated = '> 💬 **Route:** EXPLAIN (streaming)\n\n';
-                for await (const token of api.streamChat(this._repoId, questionWithContext)) {
-                    if (this._abortController?.signal.aborted) break;
+                for await (const token of api.streamChat(this._repoId, questionWithContext, chatHistory)) {
+                    if (this._abortController?.signal.aborted) {
+                        accumulated += '\n\n> ⏹️ *Response cancelled*';
+                        this.postMessage({ type: 'MESSAGE_UPDATE', content: accumulated });
+                        break;
+                    }
                     accumulated += token;
                     this.postMessage({ type: 'MESSAGE_UPDATE', content: accumulated });
                 }
@@ -273,7 +292,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             }
 
             // Use /chat/smart for dynamic multi-agent routing (Feature 1)
-            const smartResult = await api.smartChat(this._repoId, questionWithContext, undefined, contextFileHints);
+            const smartResult = await api.smartChat(
+                this._repoId, questionWithContext, chatHistory, contextFileHints,
+                this._abortController?.signal
+            );
 
             // Build routing badge
             const routing = smartResult.routing || {};
@@ -432,6 +454,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
         this.postMessage({ type: 'LOADING', loading: true });
         this._abortController = new AbortController();
+
+        // Clear stale diffs/tests from previous requests
+        this._lastGeneratedDiffs = [];
+        this._lastGeneratedTests = '';
 
         try {
             // Include any pending @file context so LLM sees existing file content
@@ -679,9 +705,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const content = diff.code || diff.content || diff.diff;
+        const content = diff.code || diff.content;
         if (!content) {
-            this.postMessage({ type: 'ERROR_TOAST', message: `No content to apply for ${filePath}` });
+            // Don't fall back to raw diff text (has +/- prefixes) — that would corrupt the file
+            this.postMessage({ type: 'ERROR_TOAST', message: `No applicable code content for ${filePath}. Only a diff is available — cannot apply directly.` });
             return;
         }
 
@@ -837,6 +864,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Public wrapper for indexing (called by commands.ts)
+     */
+    public async indexWorkspace(): Promise<void> {
+        await this._handleIndexWorkspace();
+    }
+
+    /**
      * Handle index workspace
      */
     private async _handleIndexWorkspace(): Promise<void> {
@@ -912,6 +946,39 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Export chat from stored history (preserves markdown formatting)
+     */
+    private async _handleExportFromHistory(): Promise<void> {
+        if (this._history.length === 0) {
+            this.postMessage({ type: 'ERROR_TOAST', message: 'No chat history to export.' });
+            return;
+        }
+
+        let markdown = '# RepoPilot Chat Export\n\n';
+        markdown += `*Exported: ${new Date().toLocaleString()}*\n\n---\n\n`;
+
+        for (const msg of this._history) {
+            if (msg.type !== 'MESSAGE_APPEND') { continue; }
+            const role = msg.role === 'user' ? '👤 **User**' : msg.role === 'assistant' ? '🤖 **RepoPilot**' : '⚙️ **System**';
+            markdown += `### ${role}\n\n`;
+            markdown += (msg.content || '') + '\n\n';
+
+            // Include citations if present
+            if (msg.citations && msg.citations.length > 0) {
+                markdown += '**Sources:** ';
+                markdown += msg.citations.map((c: any) =>
+                    `\`${c.file_path}${c.line_range ? ':' + c.line_range : ''}\``
+                ).join(', ');
+                markdown += '\n\n';
+            }
+
+            markdown += '---\n\n';
+        }
+
+        await this._handleSaveChat(markdown);
+    }
+
+    /**
      * Send workspace file list to webview for @ mentions
      */
     private async _sendWorkspaceFileList(): Promise<void> {
@@ -968,6 +1035,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         // The context is now available — it will be sent with the next ASK/GENERATE
         // Store it so the next ask/generate can use it
         this._pendingFileContext = contextParts.join('\n\n');
+
+        // Notify webview that file context is ready (resolves race condition)
+        this._view?.webview.postMessage({ type: 'FILE_CONTEXT_READY' });
     }
 
     /**

@@ -78,6 +78,7 @@ export interface ChatRequest {
     repo_id: string;
     question: string;
     decompose?: boolean;
+    chat_history?: Array<{ role: string; content: string }>;
 }
 
 export interface ChatResponse {
