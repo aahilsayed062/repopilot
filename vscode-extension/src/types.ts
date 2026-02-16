@@ -146,7 +146,10 @@ export type WebviewToExtensionMessage =
     | { type: 'READY' }
     | { type: 'SAVE_CHAT'; content: string }
     | { type: 'APPLY_CHANGES' }
-    | { type: 'RUN_TESTS' };
+    | { type: 'RUN_TESTS' }
+    | { type: 'MESSAGE_CLEAR' }
+    | { type: 'REQUEST_FILE_CONTEXT'; files: string[] };
+
 
 // Messages from Extension to Webview
 export type ExtensionToWebviewMessage =
@@ -154,7 +157,10 @@ export type ExtensionToWebviewMessage =
     | { type: 'MESSAGE_APPEND'; role: 'user' | 'assistant' | 'system'; content: string; citations?: Citation[]; buttons?: { label: string; action: string }[] }
     | { type: 'MESSAGE_CLEAR' }
     | { type: 'ERROR_TOAST'; message: string }
-    | { type: 'LOADING'; loading: boolean };
+    | { type: 'LOADING'; loading: boolean }
+    | { type: 'EXPORT_REQUEST' }
+    | { type: 'FILE_LIST'; files: string[] };
+
 
 // ============================================================================
 // Extension State

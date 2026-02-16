@@ -43,7 +43,7 @@ class LLMService:
             # were causing slow retries and connection failures to Groq.
             openai_http_client = httpx.AsyncClient(
                 trust_env=False,
-                timeout=httpx.Timeout(connect=8.0, read=40.0, write=20.0, pool=40.0),
+                timeout=httpx.Timeout(connect=8.0, read=90.0, write=20.0, pool=40.0),
             )
             self.openai_client = AsyncOpenAI(
                 api_key=settings.openai_api_key,
@@ -81,7 +81,8 @@ class LLMService:
         base_url = (settings.openai_base_url or "").lower()
         if not base_url:
             return True
-        return "openai.com" in base_url
+        # Groq's API supports JSON mode via response_format
+        return "openai.com" in base_url or "groq.com" in base_url
 
     async def chat_completion(
         self,
@@ -89,32 +90,27 @@ class LLMService:
         temperature: float = 0.0,
         model: str = None,
         json_mode: bool = False,
-        provider_override: Optional[str] = None,
     ) -> str:
         """
         Get completion from LLM.
 
-        Uses priority: OpenAI/Groq > Gemini > Mock (or explicit override)
+        Uses priority: OpenAI/Groq > Gemini > Mock
         """
-        provider = provider_override or self.provider
-
-        if provider == "mock":
+        if self.provider == "mock":
             return self._mock_chat(messages)
 
         try:
-            if provider == "openai":
+            if self.provider == "openai":
                 return await self._call_openai(messages, temperature, model, json_mode)
-            elif provider == "gemini":
+            elif self.provider == "gemini":
                 return await self._call_gemini(messages, temperature, json_mode)
-            elif provider == "ollama":
-                return await self._call_ollama(messages, temperature, model, json_mode)
             else:
                 return self._mock_chat(messages)
 
         except Exception as e:
-            logger.error("llm_call_failed", error=str(e), provider=provider)
-            # Try fallback to Gemini if OpenAI/Groq fails (only if no override)
-            if not provider_override and provider == "openai" and settings.gemini_api_key:
+            logger.error("llm_call_failed", error=str(e), provider=self.provider)
+            # Try fallback to Gemini if OpenAI/Groq fails
+            if self.provider == "openai" and settings.gemini_api_key:
                 logger.warning("llm_fallback_to_gemini", reason=str(e))
                 try:
                     genai.configure(api_key=settings.gemini_api_key)
@@ -123,38 +119,14 @@ class LLMService:
                     logger.error("gemini_fallback_failed", error=str(e2))
             raise
 
-    async def _call_ollama(self, messages, temperature, model, json_mode):
-        """Call local Ollama API."""
-        from app.config import settings
-
-        model = model or "qwen2.5-coder:1.5b"
-        url = "http://localhost:11434/api/chat"
-
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-            }
-        }
-        if json_mode:
-            payload["format"] = "json"
-
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0)) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            return data["message"]["content"]
-
     @backoff.on_exception(
         backoff.expo,
         RateLimitError,
-        max_tries=2,
-        max_time=15,
-        factor=2,  # Conservative: 2s, 4s then give up
+        max_tries=5,
+        max_time=120,
+        factor=3,  # Longer waits for rate limits: 3, 9, 27, 81 seconds
     )
-    @backoff.on_exception(backoff.expo, OpenAIError, max_tries=1, max_time=8)
+    @backoff.on_exception(backoff.expo, OpenAIError, max_tries=2, max_time=12)
     async def _call_openai(self, messages, temperature, model, json_mode):
         model = model or settings.openai_chat_model
 
@@ -171,7 +143,7 @@ class LLMService:
         response = await self.openai_client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=2, max_time=10)
+    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     async def _call_gemini(self, messages, temperature, json_mode):
         # Translate OpenAI messages to Gemini history
         system_instruction = None

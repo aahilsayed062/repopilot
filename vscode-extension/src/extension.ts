@@ -108,8 +108,20 @@ function startHealthCheckInterval() {
  * Initialize extension: check health and auto-index
  */
 async function initializeExtension(): Promise<void> {
-    // Check backend health
-    const isHealthy = await api.isBackendHealthy();
+    // Check backend health with retries
+    let isHealthy = await api.isBackendHealthy();
+
+    // Retry up to 3 times with 5s delay (backend may still be starting)
+    if (!isHealthy) {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            console.log(`RepoPilot: Backend not ready, retry ${attempt}/3 in 5s...`);
+            chatPanelProvider.updateStatus('not_connected');
+            statusBar.update('not_connected');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            isHealthy = await api.isBackendHealthy();
+            if (isHealthy) { break; }
+        }
+    }
 
     if (!isHealthy) {
         const backendUrl = vscode.workspace
@@ -119,9 +131,14 @@ async function initializeExtension(): Promise<void> {
         chatPanelProvider.updateStatus('not_connected');
         statusBar.update('not_connected');
         vscode.window.showWarningMessage(
-            `RepoPilot backend is not reachable at ${backendUrl}. Start it with: python backend/run.py`,
+            `RepoPilot backend is not reachable at ${backendUrl}. Start it with: RepoPilot: Start Backend`,
+            'Start Backend',
             'Dismiss'
-        );
+        ).then(action => {
+            if (action === 'Start Backend') {
+                vscode.commands.executeCommand('repopilot.startBackend');
+            }
+        });
         return;
     }
 
@@ -219,8 +236,16 @@ async function autoIndexWorkspace(workspacePath: string): Promise<void> {
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Auto-indexing failed';
         console.error('Auto-indexing failed:', message);
-        chatPanelProvider.updateStatus('error');
-        statusBar.update('error');
+
+        // Distinguish between connectivity errors and actual indexing errors
+        const isNetworkError = error instanceof api.ApiError && error.isNetworkError;
+        if (isNetworkError) {
+            chatPanelProvider.updateStatus('not_connected');
+            statusBar.update('not_connected');
+        } else {
+            chatPanelProvider.updateStatus('error');
+            statusBar.update('error');
+        }
         isAutoIndexing = false;
 
         vscode.window.showWarningMessage(

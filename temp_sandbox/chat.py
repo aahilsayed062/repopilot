@@ -224,171 +224,113 @@ class PyTestResponse(BaseModel):
     error: Optional[str] = None
 
 
-@router.post("/smart", response_model=ChatResponse)
-async def smart_chat(request: ChatRequest) -> ChatResponse:
-    """Dynamic multi-agent routing endpoint."""
-    from app.services.agent_router import agent_router, AgentAction
-    
-    # Step 1: Route
-    decision = await agent_router.route(request.question)
-    logger.info("routing_decision", action=decision.primary_action, reasoning=decision.reasoning)
-    
-    # Step 2: Execute based on routing
-    if decision.primary_action == AgentAction.REFUSE:
-        return ChatResponse(
-            answer="I cannot safely process this request: " + decision.reasoning,
-            citations=[],
-            confidence=AnswerConfidence.LOW,
-            routing_decision=decision.primary_action,
-            routing_reasoning=decision.reasoning,
-            agents_used=["ROUTER"]
-        )
-    
-    # For now, we execute the primary action. 
-    # In a full multi-agent setup, we would handle parallel/secondary actions.
-    agents_used = ["ROUTER"]
-    
-    if decision.primary_action == AgentAction.GENERATE:
-        agents_used.append("GENERATOR")
-        gen_res = await generator.generate(request.repo_id, request.question, request.chat_history)
-        # Convert GenerationResponse to ChatResponse format for simplicity in this unified flow
-        # In the future, we might want a Union response type
-        resp = ChatResponse(
-            answer=f"## Plan\n{gen_res.plan}\n\n## Changes\nGenerated {len(gen_res.diffs)} file changes.",
-            citations=[],
-            confidence=AnswerConfidence.HIGH,
-            routing_decision=decision.primary_action,
-            routing_reasoning=decision.reasoning,
-            agents_used=agents_used
-        )
-        return resp
-        
-    elif decision.primary_action == AgentAction.TEST:
-        agents_used.append("TEST_GENERATOR")
-        test_res = await test_generator.generate_tests(repo_id=request.repo_id, custom_request=request.question)
-        resp = ChatResponse(
-            answer=f"## Test Generation\n{test_res.get('explanation', '')}\n\n```python\n{test_res.get('tests', '')}\n```",
-            citations=[],
-            confidence=AnswerConfidence.HIGH,
-            routing_decision=decision.primary_action,
-            routing_reasoning=decision.reasoning,
-            agents_used=agents_used
-        )
-        return resp
-
-    else:
-        # Default to EXPLAIN
-        agents_used.append("ANSWERER")
-        resp = await _run_explain(request)
-        resp.routing_decision = decision.primary_action
-        resp.routing_reasoning = decision.reasoning
-        resp.agents_used = agents_used
-        return resp
-
-
-async def _run_explain(request: ChatRequest) -> ChatResponse:
-    """Internal helper for Q&A logic."""
-    if _is_casual_message(request.question):
-        return _build_casual_response(request.question)
-
-    path_candidates = _extract_path_candidates(request.question)
-    path_hint_chunks = await _retrieve_path_hint_chunks(request.repo_id, request.question)
-    context_hint_chunks = await _retrieve_context_hint_chunks(
-        request.repo_id, request.context_file_hints
-    )
-    if path_candidates and not path_hint_chunks:
-        return ChatResponse(
-            answer=(
-                "## Direct Answer\n"
-                "I could not find the referenced file path in this repository.\n\n"
-                "## Evidence\n"
-                f"- Requested path hint(s): {', '.join(path_candidates[:3])}\n"
-                "- No matching indexed file path was found.\n\n"
-                "## Next Steps\n"
-                "- Check the exact path and spelling.\n"
-                "- Ask with a nearby known file path if this file was renamed."
-            ),
-            citations=[],
-            confidence=AnswerConfidence.LOW,
-            assumptions=["Referenced file path was not found in repository file list."],
-        )
-
-    recent_context = _format_recent_history(request)
-    retrieval_seed = request.question.strip()
-    if recent_context:
-        retrieval_seed = (
-            f"Current question: {request.question.strip()}\n"
-            f"Recent conversation:\n{recent_context}"
-        )
-    if request.context_file_hints:
-        retrieval_seed += (
-            "\nPrior cited files that are likely relevant:\n"
-            + "\n".join(f"- {p}" for p in request.context_file_hints[:4])
-        )
-
-    # 1. Decomposition DISABLED to conserve API quota
-    sub_questions = None
-
-    is_short_follow_up = _is_short_follow_up(request.question)
-    search_queries = sub_questions if sub_questions else [retrieval_seed]
-    search_queries = [q.strip() for q in search_queries if q and q.strip()][:2]
-    if not search_queries:
-        search_queries = [retrieval_seed]
-    if is_short_follow_up and recent_context:
-        search_queries.insert(
-            0,
-            (
-                f"Follow-up question: {request.question.strip()}\n"
-                f"Resolve references using recent conversation:\n{recent_context}"
-            ),
-        )
-    if recent_context and sub_questions:
-        search_queries = [
-            f"{q}\nRelated recent conversation:\n{recent_context}"
-            for q in search_queries
-        ]
-    retrieval_k = 3 if is_short_follow_up else 3
-
-    # 2. Retrieve in parallel
-    retrievals = await asyncio.gather(
-        *[
-            retriever.retrieve(repo_id=request.repo_id, query=q, k=retrieval_k)
-            for q in search_queries
-        ],
-        return_exceptions=True,
-    )
-    all_chunks = []
-    all_chunks.extend(path_hint_chunks)
-    all_chunks.extend(context_hint_chunks)
-    for result in retrievals:
-        if isinstance(result, Exception):
-            continue
-        all_chunks.extend(result)
-        
-    # 3. Deduplicate chunks
-    seen_ids = set()
-    unique_chunks = []
-    for c in all_chunks:
-        if c.metadata.chunk_id not in seen_ids:
-            unique_chunks.append(c)
-            seen_ids.add(c.metadata.chunk_id)
-
-    # 4. Answer with bounded context
-    response = await answerer.answer(
-        query=request.question,
-        chunks=unique_chunks[:4],
-        conversation_context=recent_context,
-    )
-    return response
-
-
 @router.post("/ask", response_model=ChatResponse)
 async def ask_question(request: ChatRequest) -> ChatResponse:
     """
     Ask a question about the repository.
     """
     try:
-        return await _run_explain(request)
+        if _is_casual_message(request.question):
+            return _build_casual_response(request.question)
+
+        path_candidates = _extract_path_candidates(request.question)
+        path_hint_chunks = await _retrieve_path_hint_chunks(request.repo_id, request.question)
+        context_hint_chunks = await _retrieve_context_hint_chunks(
+            request.repo_id, request.context_file_hints
+        )
+        if path_candidates and not path_hint_chunks:
+            return ChatResponse(
+                answer=(
+                    "## Direct Answer\n"
+                    "I could not find the referenced file path in this repository.\n\n"
+                    "## Evidence\n"
+                    f"- Requested path hint(s): {', '.join(path_candidates[:3])}\n"
+                    "- No matching indexed file path was found.\n\n"
+                    "## Next Steps\n"
+                    "- Check the exact path and spelling.\n"
+                    "- Ask with a nearby known file path if this file was renamed."
+                ),
+                citations=[],
+                confidence=AnswerConfidence.LOW,
+                assumptions=["Referenced file path was not found in repository file list."],
+            )
+
+        recent_context = _format_recent_history(request)
+        retrieval_seed = request.question.strip()
+        if recent_context:
+            retrieval_seed = (
+                f"Current question: {request.question.strip()}\n"
+                f"Recent conversation:\n{recent_context}"
+            )
+        if request.context_file_hints:
+            retrieval_seed += (
+                "\nPrior cited files that are likely relevant:\n"
+                + "\n".join(f"- {p}" for p in request.context_file_hints[:4])
+            )
+
+        # 1. Decomposition (only when likely beneficial)
+        sub_questions = None
+        if request.decompose or planner.should_decompose(request.question):
+            try:
+                sub_questions = await asyncio.wait_for(
+                    planner.decompose(request.question), timeout=4.5
+                )
+            except Exception:
+                sub_questions = None
+
+        is_short_follow_up = _is_short_follow_up(request.question)
+        search_queries = sub_questions if sub_questions else [retrieval_seed]
+        search_queries = [q.strip() for q in search_queries if q and q.strip()][:2]
+        if not search_queries:
+            search_queries = [retrieval_seed]
+        if is_short_follow_up and recent_context:
+            search_queries.insert(
+                0,
+                (
+                    f"Follow-up question: {request.question.strip()}\n"
+                    f"Resolve references using recent conversation:\n{recent_context}"
+                ),
+            )
+        if recent_context and sub_questions:
+            search_queries = [
+                f"{q}\nRelated recent conversation:\n{recent_context}"
+                for q in search_queries
+            ]
+        retrieval_k = 6 if is_short_follow_up else 4
+
+        # 2. Retrieve in parallel
+        retrievals = await asyncio.gather(
+            *[
+                retriever.retrieve(repo_id=request.repo_id, query=q, k=retrieval_k)
+                for q in search_queries
+            ],
+            return_exceptions=True,
+        )
+        all_chunks = []
+        all_chunks.extend(path_hint_chunks)
+        all_chunks.extend(context_hint_chunks)
+        for result in retrievals:
+            if isinstance(result, Exception):
+                continue
+            all_chunks.extend(result)
+            
+        # 3. Deduplicate chunks
+        seen_ids = set()
+        unique_chunks = []
+        for c in all_chunks:
+            if c.metadata.chunk_id not in seen_ids:
+                unique_chunks.append(c)
+                seen_ids.add(c.metadata.chunk_id)
+
+        # 4. Answer with bounded context
+        response = await answerer.answer(
+            query=request.question,
+            chunks=unique_chunks[:4],
+            conversation_context=recent_context,
+        )
+        
+        return response
+        
     except Exception as e:
         logger.exception("chat_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

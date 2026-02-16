@@ -43,3 +43,8 @@ class ChatResponse(BaseModel):
     confidence: AnswerConfidence
     assumptions: List[str] = Field(default_factory=list)
     subquestions: Optional[List[str]] = None
+    # Round 2 fields
+    routing_decision: Optional[str] = None
+    routing_reasoning: Optional[str] = None
+    agents_used: List[str] = Field(default_factory=list)
+    agents_skipped: List[str] = Field(default_factory=list)
