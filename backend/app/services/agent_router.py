@@ -61,20 +61,49 @@ Return JSON:
 }"""
 
     async def route(self, query: str, repo_context: str = "") -> RoutingDecision:
-        """Decide which agents to invoke for this query."""
+        """Decide which agents to invoke for this query.
+
+        Uses the ultra-light 0.5b router model first (fast classification).
+        If it fails to produce valid JSON, falls back to the 1.5b model.
+        If that also fails, falls back to keyword heuristics.
+        """
         messages = [
             {"role": "system", "content": self.ROUTING_PROMPT},
             {"role": "user", "content": f"Query: {query}\nRepo context: {repo_context or 'General'}"}
         ]
-        
+
+        # Attempt 1: ultra-fast 0.5b router (classification-only task)
         try:
-            response = await llm.chat_completion(messages, json_mode=True, provider_override="ollama_b")
+            response = await llm.chat_completion(
+                messages,
+                json_mode=True,
+                provider_override="ollama_router",
+                max_tokens=128,
+            )
             data = json.loads(response)
-            return RoutingDecision(**data)
+            decision = RoutingDecision(**data)
+            logger.info("routing_via_0.5b", action=decision.primary_action.value)
+            return decision
         except Exception as e:
-            logger.error("routing_failed", error=str(e))
-            # Fallback: heuristic routing
-            return self._heuristic_route(query)
+            logger.warning("router_0.5b_failed_falling_back", error=str(e))
+
+        # Attempt 2: fallback to 1.5b model (more capable)
+        try:
+            response = await llm.chat_completion(
+                messages,
+                json_mode=True,
+                provider_override="ollama",
+                max_tokens=192,
+            )
+            data = json.loads(response)
+            decision = RoutingDecision(**data)
+            logger.info("routing_via_1.5b_fallback", action=decision.primary_action.value)
+            return decision
+        except Exception as e:
+            logger.error("routing_llm_failed", error=str(e))
+
+        # Attempt 3: deterministic heuristic (always works)
+        return self._heuristic_route(query)
     
     def _heuristic_route(self, query: str) -> RoutingDecision:
         """Fast fallback if LLM routing fails."""

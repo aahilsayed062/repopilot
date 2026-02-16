@@ -1,13 +1,20 @@
 """
 Indexer service - Orchestrates chunking, embedding, and storage.
+
+Supports two modes:
+- **Ephemeral** (USE_PERSISTENT_INDEX=false): in-memory ChromaDB, rebuilt every time.
+- **Persistent** (USE_PERSISTENT_INDEX=true): on-disk ChromaDB with commit-hash
+  staleness detection.  Skips re-indexing when the stored commit matches the
+  current repo state.
 """
 
 import asyncio
 import chromadb
+import json as _json
 import shutil
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.config import settings
 from app.utils.logger import get_logger
@@ -41,6 +48,8 @@ class Indexer:
         self.time_budget_seconds = max(20, settings.index_time_budget_seconds)
         self.use_persistent_index = settings.use_persistent_index
         self._ephemeral_client: Optional[chromadb.ClientAPI] = None
+        # Cache persistent clients by db_path to avoid re-creating on every query
+        self._persistent_clients: Dict[str, chromadb.ClientAPI] = {}
         if not self.use_persistent_index:
             self._ephemeral_client = chromadb.EphemeralClient()
 
@@ -53,9 +62,82 @@ class Indexer:
         return f"repo_{repo_id}"
 
     def _get_client(self, db_path: Path) -> chromadb.ClientAPI:
-        """Get ChromaDB client for specific path."""
+        """Get or create a ChromaDB PersistentClient for the given path.
+
+        Clients are cached so repeated ``get_collection`` calls don't
+        re-open the database every time.
+        """
+        key = str(db_path)
+        if key in self._persistent_clients:
+            return self._persistent_clients[key]
         db_path.mkdir(parents=True, exist_ok=True)
-        return chromadb.PersistentClient(path=str(db_path))
+        client = chromadb.PersistentClient(path=key)
+        self._persistent_clients[key] = client
+        return client
+
+    # ── Staleness detection ───────────────────────────────────────
+
+    _INDEX_META_FILE = "_index_meta.json"
+
+    def _meta_path(self, db_path: Path) -> Path:
+        """Path to the JSON metadata file stored alongside the ChromaDB data."""
+        return db_path / self._INDEX_META_FILE
+
+    def _read_index_meta(self, db_path: Path) -> Optional[dict]:
+        """Read the cached index metadata (commit_hash, chunk_count, etc.)."""
+        meta_file = self._meta_path(db_path)
+        if not meta_file.exists():
+            return None
+        try:
+            return _json.loads(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _write_index_meta(
+        self, db_path: Path, commit_hash: str, chunk_count: int
+    ) -> None:
+        """Persist index metadata next to the ChromaDB data."""
+        meta_file = self._meta_path(db_path)
+        meta_file.parent.mkdir(parents=True, exist_ok=True)
+        meta_file.write_text(
+            _json.dumps(
+                {
+                    "commit_hash": commit_hash,
+                    "chunk_count": chunk_count,
+                    "indexed_at": time.time(),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def _is_index_fresh(self, repo_info: RepoInfo, force: bool = False) -> bool:
+        """Return True if the persistent index is up-to-date for this repo.
+
+        An index is fresh when:
+        - ``force`` is False
+        - The metadata file exists
+        - The stored commit_hash matches ``repo_info.commit_hash``
+        - The ChromaDB directory actually contains data
+        """
+        if force:
+            return False
+        db_path = self._get_db_path(repo_info)
+        meta = self._read_index_meta(db_path)
+        if meta is None:
+            return False
+        if meta.get("commit_hash") != repo_info.commit_hash:
+            logger.info(
+                "index_stale_commit_changed",
+                repo_id=repo_info.repo_id,
+                stored=meta.get("commit_hash"),
+                current=repo_info.commit_hash,
+            )
+            return False
+        # Verify the ChromaDB directory actually has content
+        if not (db_path / "chroma.sqlite3").exists():
+            return False
+        return True
 
     def _priority_for_file(self, file_meta: dict) -> tuple[int, int, int]:
         """
@@ -127,9 +209,13 @@ class Indexer:
         )
         return selected
 
-    async def index_repo(self, repo_id: str) -> dict:
+    async def index_repo(self, repo_id: str, force: bool = False) -> dict:
         """
         Full indexing workflow for a repository.
+
+        When ``use_persistent_index`` is enabled the method first checks
+        whether the on-disk index is still fresh (same commit hash).  If
+        fresh, it returns immediately without any embedding work.
         """
         logger.info("indexing_started", repo_id=repo_id)
 
@@ -137,6 +223,28 @@ class Indexer:
         repo_info = repo_manager.get_repo(repo_id)
         if not repo_info:
             raise RepoManagerError(f"Repository not found: {repo_id}")
+
+        # ── Persistent-index shortcut: skip if already up-to-date ──
+        if self.use_persistent_index and self._is_index_fresh(repo_info, force=force):
+            meta = self._read_index_meta(self._get_db_path(repo_info))
+            cached_chunks = (meta or {}).get("chunk_count", 0)
+            logger.info(
+                "index_cache_hit",
+                repo_id=repo_id,
+                commit=repo_info.commit_hash[:8],
+                chunks=cached_chunks,
+            )
+            repo_manager.update_repo(
+                repo_id,
+                persist=True,
+                is_indexing=False,
+                indexed=True,
+                index_progress_pct=100.0,
+                chunk_count=cached_chunks,
+                index_processed_chunks=cached_chunks,
+                index_total_chunks=cached_chunks,
+            )
+            return {"indexed": True, "chunk_count": cached_chunks, "from_cache": True}
 
         repo_manager.update_repo(
             repo_id,
@@ -244,7 +352,11 @@ class Indexer:
             collection_name = self._collection_name(repo_id)
             if self.use_persistent_index:
                 db_path = self._get_db_path(repo_info)
+                # Evict the cached client for this path so we start clean
+                self._persistent_clients.pop(str(db_path), None)
                 if db_path.exists():
+                    # Only delete when we are actually about to re-index
+                    # (staleness check above already returned early if fresh)
                     await asyncio.to_thread(shutil.rmtree, db_path, ignore_errors=True)
                 client = self._get_client(db_path)
             else:
@@ -339,6 +451,11 @@ class Indexer:
                 chunks=final_chunk_count,
                 partial=timed_out_during_index or final_chunk_count < total_chunks,
             )
+
+            # Persist index metadata for future staleness checks
+            if self.use_persistent_index:
+                db_path = self._get_db_path(repo_info)
+                self._write_index_meta(db_path, repo_info.commit_hash, final_chunk_count)
 
             return {
                 "indexed": True,

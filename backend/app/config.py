@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL")
     ollama_model_a: str = Field(default="qwen2.5-coder:1.5b", validation_alias="OLLAMA_MODEL_A")
     ollama_model_b: str = Field(default="qwen2.5-coder:3b", validation_alias="OLLAMA_MODEL_B")
-    ollama_embed_model: str = Field(default="nomic-embed-text", validation_alias="OLLAMA_EMBED_MODEL")
+    ollama_router_model: str = Field(default="qwen2.5-coder:0.5b", validation_alias="OLLAMA_ROUTER_MODEL")
+    ollama_embed_model: str = Field(default="all-minilm", validation_alias="OLLAMA_EMBED_MODEL")
     
     # Paths - use absolute path
     data_dir: Path = Field(default=PROJECT_ROOT / "data", validation_alias="DATA_DIR")

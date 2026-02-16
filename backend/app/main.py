@@ -5,6 +5,7 @@ A repository-grounded engineering assistant that provides answers,
 generates code, and writes tests only when supported by evidence.
 """
 
+import asyncio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -47,9 +48,21 @@ async def lifespan(app: FastAPI):
     # Ensure data directory exists
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     
+    # Pre-warm Ollama models (loads into VRAM, eliminates cold-start)
+    from app.utils.llm import llm
+    await llm.prewarm_models()
+    
+    # Start background heartbeat to keep models loaded
+    _heartbeat_task = asyncio.create_task(llm.heartbeat_loop(interval_seconds=240))
+    
     yield
     
     # Shutdown
+    _heartbeat_task.cancel()
+    try:
+        await _heartbeat_task
+    except asyncio.CancelledError:
+        pass
     logger.info("shutting_down_repopilot")
 
 

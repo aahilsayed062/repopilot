@@ -7,7 +7,8 @@ Why Ollama first?
 1. ZERO rate limits - runs locally
 2. Fast - no network latency
 3. Free - no API costs
-4. nomic-embed-text produces 768-dim vectors (same as Gemini)
+4. all-minilm produces 384-dim vectors (fast, lightweight)
+   Fallback: Gemini embedding-001 produces 768-dim vectors
 """
 
 import asyncio
@@ -44,7 +45,8 @@ class EmbeddingService:
     """
 
     # Embedding dimensions by provider
-    OLLAMA_DIM = 768    # nomic-embed-text default
+    OLLAMA_DIM = 384    # all-minilm default (faster, smaller)
+    OLLAMA_DIM_NOMIC = 768  # nomic-embed-text
     GEMINI_DIM = 768
     OPENAI_DIM = 1536
 
@@ -59,9 +61,12 @@ class EmbeddingService:
         # Priority 1: Ollama (local, fast, no rate limits)
         if self._check_ollama_embed_available():
             self.provider = "ollama"
-            # Auto-detect dimension
-            if "minilm" in self.ollama_embed_model.lower():
+            # Auto-detect dimension based on model name
+            model_lower = self.ollama_embed_model.lower()
+            if "minilm" in model_lower:
                 self.dimension = 384
+            elif "nomic" in model_lower:
+                self.dimension = self.OLLAMA_DIM_NOMIC
             else:
                 self.dimension = self.OLLAMA_DIM
             

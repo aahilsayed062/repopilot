@@ -24,6 +24,9 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Keep models loaded in Ollama VRAM for 24 hours (avoids cold-start eviction)
+OLLAMA_KEEP_ALIVE = "24h"
+
 
 class LLMService:
     """Interface for Chat LLM (Ollama > OpenAI/Groq > Gemini > Mock).
@@ -138,6 +141,8 @@ class LLMService:
                 return await self._call_ollama(messages, temperature, model or settings.ollama_model_a, json_mode, max_tokens)
             elif provider == "ollama_b":
                 return await self._call_ollama(messages, temperature, model or settings.ollama_model_b, json_mode, max_tokens)
+            elif provider == "ollama_router":
+                return await self._call_ollama(messages, temperature, model or settings.ollama_router_model, json_mode, max_tokens)
             elif provider == "openai":
                 return await self._call_openai(messages, temperature, model, json_mode)
             elif provider == "gemini":
@@ -193,6 +198,9 @@ class LLMService:
             elif provider == "ollama_b":
                 async for chunk in self._call_ollama_stream(messages, temperature, model or settings.ollama_model_b, max_tokens, json_mode):
                     yield chunk
+            elif provider == "ollama_router":
+                async for chunk in self._call_ollama_stream(messages, temperature, model or settings.ollama_router_model, max_tokens, json_mode):
+                    yield chunk
             else:
                 # For non-streaming providers (or not yet implemented), fall back to non-streaming
                 full_response = await self.chat_completion(messages, temperature, model, json_mode, provider_override, max_tokens)
@@ -210,6 +218,7 @@ class LLMService:
             "model": model,
             "messages": messages,
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
@@ -239,6 +248,7 @@ class LLMService:
             "model": model,
             "messages": messages,
             "stream": True,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
@@ -368,6 +378,76 @@ class LLMService:
             "Based on the context provided, the answer is found in the retrieved chunks.\n"
             "Please install Ollama or configure GEMINI_API_KEY to get real grounded answers."
         )
+
+    # ── Pre-warm & Heartbeat ──────────────────────────────────────
+
+    async def prewarm_models(self) -> None:
+        """Load all Ollama models into memory on startup.
+
+        Sends a trivial prompt with keep_alive=24h so models stay resident.
+        This eliminates the cold-start penalty on first real query.
+        """
+        if self.provider not in ("ollama",):
+            return
+
+        models_to_warm = [
+            settings.ollama_model_a,
+            settings.ollama_model_b,
+            settings.ollama_router_model,
+        ]
+        # Deduplicate (in case any models overlap)
+        models_to_warm = list(dict.fromkeys(models_to_warm))
+
+        async def _warm_one(model: str) -> None:
+            try:
+                timeout = httpx.Timeout(120.0, connect=10.0)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(
+                        f"{self.ollama_base_url}/api/chat",
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "stream": False,
+                            "keep_alive": OLLAMA_KEEP_ALIVE,
+                            "options": {"num_predict": 1},
+                        },
+                    )
+                    resp.raise_for_status()
+                    logger.info("model_prewarmed", model=model)
+            except Exception as e:
+                logger.warning("model_prewarm_failed", model=model, error=str(e))
+
+        await asyncio.gather(*[_warm_one(m) for m in models_to_warm])
+
+    async def heartbeat_loop(self, interval_seconds: int = 240) -> None:
+        """Background coroutine that pings Ollama every `interval_seconds`
+        to keep models loaded in VRAM and avoid eviction.
+
+        Start with: asyncio.create_task(llm.heartbeat_loop())
+        """
+        if self.provider not in ("ollama",):
+            return
+
+        logger.info("ollama_heartbeat_started", interval=interval_seconds)
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                timeout = httpx.Timeout(30.0, connect=5.0)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    # Lightweight keep-alive ping for primary model
+                    await client.post(
+                        f"{self.ollama_base_url}/api/chat",
+                        json={
+                            "model": settings.ollama_model_a,
+                            "messages": [{"role": "user", "content": "ping"}],
+                            "stream": False,
+                            "keep_alive": OLLAMA_KEEP_ALIVE,
+                            "options": {"num_predict": 1},
+                        },
+                    )
+                logger.debug("ollama_heartbeat_ok")
+            except Exception as e:
+                logger.warning("ollama_heartbeat_failed", error=str(e))
 
 
 # Global instance

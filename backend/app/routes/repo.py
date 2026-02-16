@@ -120,8 +120,12 @@ async def index_repository(request: RepoIndexRequest) -> RepoIndexResponse:
         )
     
     try:
-        result = await indexer.index_repo(request.repo_id)
+        result = await indexer.index_repo(request.repo_id, force=request.force)
         
+        # Invalidate response cache for this repo (stale answers after re-index)
+        from app.utils.cache import response_cache
+        await response_cache.invalidate_repo(request.repo_id)
+
         return RepoIndexResponse(
             success=True,
             repo_id=request.repo_id,

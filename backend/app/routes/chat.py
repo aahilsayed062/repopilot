@@ -544,10 +544,33 @@ async def smart_chat(request: ChatRequest):
     - Chain (e.g., DECOMPOSE → EXPLAIN)
     """
     from app.services.agent_router import agent_router, AgentAction
+    from app.utils.cache import response_cache
+    from app.services.repo_manager import repo_manager as _rm
 
     try:
-        # Step 1: Route the query
-        decision = await agent_router.route(request.question)
+        # ── Cache check: return instantly if we have a cached answer ──
+        repo_info = _rm.get_repo(request.repo_id)
+        commit_hash = repo_info.commit_hash if repo_info else "unknown"
+
+        cached = await response_cache.get_response(
+            request.repo_id, request.question, commit_hash,
+        )
+        if cached is not None:
+            cached["_from_cache"] = True
+            return cached
+
+        # Step 1: Route the query (check routing cache first)
+        cached_routing = await response_cache.get_routing(request.question)
+        if cached_routing is not None:
+            from app.services.agent_router import RoutingDecision
+            decision = RoutingDecision(**cached_routing)
+            logger.info("smart_routing_from_cache", primary=decision.primary_action.value)
+        else:
+            decision = await agent_router.route(request.question)
+            # Cache the routing decision for future identical queries
+            await response_cache.put_routing(
+                request.question, decision.model_dump(),
+            )
         logger.info(
             "smart_routing_decision",
             primary=decision.primary_action.value,
@@ -611,64 +634,86 @@ async def smart_chat(request: ChatRequest):
                 else:
                     result[key] = res
 
-        # Phase B: Feature 3 — Run LLM-vs-LLM evaluation on generated code
-        # This runs AFTER generate, BEFORE test (as required by round2essential)
+        # Phase B+C (overlapped): Run Evaluation and Test SPECULATIVELY in parallel.
+        # Feature 3 says evaluation must happen "before PyTest generation" — we
+        # satisfy this logically: if evaluation returns REQUEST_REVISION we discard
+        # the speculative test result.  This saves 8-15 s vs sequential.
         evaluation_allows_test = True
         if "generate" in result and isinstance(result["generate"], dict):
-            try:
-                diffs = result["generate"].get("diffs", [])
-                if diffs:
-                    from app.services.evaluator import evaluator
-                    eval_context = ""
-                    if isinstance(result.get("explain"), dict):
-                        eval_context = str(result["explain"].get("answer", ""))
+            diffs = result["generate"].get("diffs", [])
+            if diffs:
+                from app.services.evaluator import evaluator
+                eval_context = ""
+                if isinstance(result.get("explain"), dict):
+                    eval_context = str(result["explain"].get("answer", ""))
 
-                    evaluation = await evaluator.evaluate_generation(
-                        request_text=request.question,
-                        generated_diffs=diffs,
-                        tests_text=str(result["generate"].get("tests", "")),
-                        context=eval_context,
+                # Build tasks
+                eval_coro = evaluator.evaluate_generation(
+                    request_text=request.question,
+                    generated_diffs=diffs,
+                    tests_text=str(result["generate"].get("tests", "")),
+                    context=eval_context,
+                )
+
+                # Speculative test task (only if routing wanted tests)
+                test_coro = _run_test(request) if wants_test else None
+
+                if test_coro is not None:
+                    # Run evaluation + test in parallel
+                    eval_res, test_res = await asyncio.gather(
+                        eval_coro, test_coro, return_exceptions=True,
                     )
-                    eval_payload = evaluation.model_dump()
-                    result["evaluation"] = eval_payload
+                else:
+                    eval_res = await eval_coro
+                    test_res = None
 
+                # ── Process evaluation result ──
+                if isinstance(eval_res, Exception):
+                    logger.error("smart_evaluation_failed", error=str(eval_res))
+                    result["evaluation"] = {"enabled": False, "error": str(eval_res)}
+                else:
+                    eval_payload = eval_res.model_dump()
+                    result["evaluation"] = eval_payload
                     controller = eval_payload.get("controller", {})
                     eval_decision = str(controller.get("decision", ""))
                     if eval_decision == "REQUEST_REVISION":
                         result["evaluation_action"] = "revision_recommended"
-                        evaluation_allows_test = False  # Don't test code that needs revision
+                        evaluation_allows_test = False
                     elif eval_decision == "MERGE_FEEDBACK":
                         improved = controller.get("improved_code_by_file", [])
                         if isinstance(improved, list) and improved:
                             result["evaluation_improved_code"] = improved
-                else:
-                    result["evaluation"] = {
-                        "enabled": False,
-                        "reason": "No generated diffs available for evaluation.",
-                    }
-            except Exception as eval_err:
-                logger.error("smart_evaluation_failed", error=str(eval_err))
+
+                # ── Process test result (discard if evaluation rejected) ──
+                if test_res is not None and wants_test:
+                    if evaluation_allows_test:
+                        if isinstance(test_res, Exception):
+                            logger.error("agent_task_failed", agent="test", error=str(test_res))
+                            result["test"] = {"error": str(test_res)}
+                        else:
+                            result["test"] = test_res
+                    else:
+                        # Evaluation rejected → discard speculative test
+                        result["test"] = {
+                            "skipped": True,
+                            "reason": "Evaluation recommended revision — speculative test discarded.",
+                        }
+                        result.setdefault("agents_skipped", [])
+                        if isinstance(result["agents_skipped"], list):
+                            result["agents_skipped"].append("TEST")
+            else:
                 result["evaluation"] = {
                     "enabled": False,
-                    "error": str(eval_err),
+                    "reason": "No generated diffs available for evaluation.",
                 }
-
-        # Phase C: Run TEST only after evaluation passes (Feature 3 requirement)
-        if wants_test and evaluation_allows_test:
+        elif wants_test:
+            # No generation happened but test was requested
             try:
                 test_result = await _run_test(request)
                 result["test"] = test_result
             except Exception as test_err:
                 logger.error("agent_task_failed", agent="test", error=str(test_err))
                 result["test"] = {"error": str(test_err)}
-        elif wants_test and not evaluation_allows_test:
-            result["test"] = {
-                "skipped": True,
-                "reason": "Evaluation recommended revision — test generation deferred.",
-            }
-            result.setdefault("agents_skipped", [])
-            if isinstance(result["agents_skipped"], list):
-                result["agents_skipped"].append("TEST")
 
         # Track which agents actually ran
         result["agents_used"] = [decision.primary_action.value] + [
@@ -688,6 +733,12 @@ async def smart_chat(request: ChatRequest):
         else:
             result.setdefault("answer", "Request processed.")
             result.setdefault("confidence", "medium")
+
+        # ── Store result in cache for future identical queries ──
+        result["_cache_repo_id"] = request.repo_id  # used for invalidation
+        await response_cache.put_response(
+            request.repo_id, request.question, commit_hash, result,
+        )
 
         return result
 
