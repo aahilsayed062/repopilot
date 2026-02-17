@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { type JSX } from 'react';
 import './StarBorder.css';
 
 interface StarBorderProps {

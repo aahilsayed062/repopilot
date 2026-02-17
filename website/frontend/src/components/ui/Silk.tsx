@@ -3,6 +3,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { forwardRef, useRef, useMemo, useLayoutEffect } from 'react';
 import { Color, ShaderMaterial } from 'three';
+import type * as THREE from 'three';
 
 const hexToNormalizedRGB = (hex: string): [number, number, number] => {
     hex = hex.replace('#', '');
@@ -131,8 +132,8 @@ const Silk = ({
     );
 
     return (
-        <div className={`absolute inset-0 ${className}`}>
-            <Canvas dpr={[1, 2]} frameloop="always">
+        <div className={`absolute inset-0 ${className}`} suppressHydrationWarning>
+            <Canvas dpr={[1, 2]} frameloop="always" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}>
                 <SilkPlane ref={meshRef} uniforms={uniforms} />
             </Canvas>
         </div>

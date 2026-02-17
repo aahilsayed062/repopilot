@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useMemo, type JSX } from 'react';
 
 interface ShuffleProps {
     text: string;
@@ -439,7 +439,7 @@ const Shuffle = ({
         () => `${baseTw} ${ready ? 'visible' : 'invisible'} ${className}`.trim(),
         [baseTw, ready, className]
     );
-    const Tag = (tag || 'p') as keyof JSX.IntrinsicElements;
+    const Tag = (tag || 'p') as keyof React.JSX.IntrinsicElements;
     const commonStyle = useMemo(() => ({ textAlign: textAlign as React.CSSProperties['textAlign'], ...style }), [textAlign, style]);
 
     return React.createElement(Tag, { ref: ref as any, className: classes, style: commonStyle }, text);

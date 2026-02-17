@@ -1,5 +1,5 @@
 """
-Health check endpoint.
+Health check endpoint for RepoPilot Website API.
 """
 
 from fastapi import APIRouter
@@ -13,19 +13,17 @@ class HealthResponse(BaseModel):
     """Health check response schema."""
     status: str
     version: str
-    mock_mode: bool
+    gemini_configured: bool
 
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """
     Health check endpoint.
-    
-    Returns:
-        HealthResponse with status, version, and mock mode indicator.
+    Returns status, version, and whether Gemini API is configured.
     """
     return HealthResponse(
         status="ok",
         version=settings.app_version,
-        mock_mode=settings.use_mock_embeddings
+        gemini_configured=bool(settings.gemini_api_key),
     )

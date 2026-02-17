@@ -1,76 +1,45 @@
 """
-RepoPilot AI - FastAPI Application Entry Point
+RepoPilot Website — FastAPI Application Entry Point
 
-A repository-grounded engineering assistant that provides answers,
-generates code, and writes tests only when supported by evidence.
+Lightweight API for GitHub repo architecture analysis.
+Paste a GitHub URL → clone → analyze → return interactive architecture overview.
 """
 
-import asyncio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.config import settings
-# Force explicit env load check
 from dotenv import load_dotenv
 load_dotenv()
 from app.utils.logger import setup_logging, get_logger, set_request_id
-from app.routes import health, repo, chat
+from app.routes import health, analyze
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
-    # Startup
     setup_logging(debug=settings.debug)
     logger = get_logger("main")
     
-    # Determine providers for logging
-    embedding_provider = "Ollama" if settings.ollama_embed_model else ("Gemini" if settings.gemini_api_key else "Mock")
-    
-    if settings.ollama_base_url:
-        chat_provider = "Ollama"
-    elif settings.openai_api_key and settings.openai_base_url and "groq" in settings.openai_base_url:
-        chat_provider = "Groq"
-    elif settings.gemini_api_key:
-        chat_provider = "Gemini"
-    else:
-        chat_provider = "Mock"
+    llm_provider = "Gemini" if settings.gemini_api_key else "Mock (no GEMINI_API_KEY)"
     
     logger.info(
-        "starting_repopilot",
+        "starting_repopilot_website",
         version=settings.app_version,
-        embedding_provider=embedding_provider,
-        chat_provider=chat_provider,
-        data_dir=str(settings.data_dir)
+        llm_provider=llm_provider,
     )
-    
-    # Ensure data directory exists
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Pre-warm Ollama models (loads into VRAM, eliminates cold-start)
-    from app.utils.llm import llm
-    await llm.prewarm_models()
-    
-    # Start background heartbeat to keep models loaded
-    _heartbeat_task = asyncio.create_task(llm.heartbeat_loop(interval_seconds=240))
     
     yield
     
-    # Shutdown
-    _heartbeat_task.cancel()
-    try:
-        await _heartbeat_task
-    except asyncio.CancelledError:
-        pass
-    logger.info("shutting_down_repopilot")
+    logger.info("shutting_down_repopilot_website")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title=settings.app_name,
+    title="RepoPilot Website API",
     version=settings.app_version,
-    description="Repository-grounded engineering assistant",
+    description="GitHub repo architecture analysis API — paste a URL, get an interactive overview",
     lifespan=lifespan
 )
 
@@ -98,8 +67,7 @@ async def request_id_middleware(request: Request, call_next):
 
 # Register routers
 app.include_router(health.router)
-app.include_router(repo.router)
-app.include_router(chat.router)
+app.include_router(analyze.router)
 
 
 from fastapi.responses import JSONResponse
@@ -123,7 +91,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/", include_in_schema=False)
 async def root():
     """Redirect root to API docs."""
-    return {"message": "Welcome to RepoPilot AI", "docs": "/docs"}
+    return {"message": "Welcome to RepoPilot Website API", "docs": "/docs"}
 
 
 if __name__ == "__main__":
