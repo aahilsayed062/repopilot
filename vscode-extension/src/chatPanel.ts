@@ -444,9 +444,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             if (this._lastGeneratedDiffs.length > 0) {
                 buttons.push({ label: '✅ Accept All', action: 'ACCEPT_ALL' });
             }
-            if (this._isValidTestCode(this._lastGeneratedTests)) {
-                buttons.push({ label: '▶️ Run Tests', action: 'RUN_TESTS' });
-            } else if (this._lastGeneratedDiffs.length > 0) {
+            if (this._lastGeneratedDiffs.length > 0) {
                 buttons.push({ label: '🧪 Generate Tests', action: 'GENERATE_TESTS' });
             }
 
@@ -559,9 +557,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             if (this._lastGeneratedDiffs.length > 0) {
                 buttons.push({ label: '✅ Accept All', action: 'ACCEPT_ALL' });
             }
-            if (this._isValidTestCode(this._lastGeneratedTests)) {
-                buttons.push({ label: '▶️ Run Tests', action: 'RUN_TESTS' });
-            } else if (this._lastGeneratedDiffs.length > 0) {
+            if (this._lastGeneratedDiffs.length > 0) {
                 buttons.push({ label: '🧪 Generate Tests', action: 'GENERATE_TESTS' });
             }
 
@@ -697,7 +693,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 content,
                 buttons: [
                     { label: '✅ Apply Refined Code', action: 'APPLY_CHANGES' },
-                    { label: '🧪 Run Tests', action: 'RUN_TESTS' },
                 ],
             });
         } catch (error) {
@@ -1118,7 +1113,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                     role: 'assistant',
                     content,
                     citations: response.source_files?.map((f: string) => ({ file_path: f, line_range: '', snippet: '', why: 'Source file' })) || [],
-                    buttons: [{ label: '▶️ Run Tests', action: 'RUN_TESTS' }]
+                    buttons: []
                 });
             } else if (response.success && !response.tests) {
                 // Backend succeeded but no test code was produced
