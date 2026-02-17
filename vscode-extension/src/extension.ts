@@ -48,6 +48,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         )
     );
 
+    // Register content provider for Copilot-style diff previews
+    context.subscriptions.push(
+        vscode.workspace.registerTextDocumentContentProvider('repopilot-proposed', {
+            provideTextDocumentContent(uri: vscode.Uri): string {
+                const key = uri.path.replace(/^\//, '');
+                return ChatPanelProvider.proposedContents.get(key) || '';
+            }
+        })
+    );
+
     // Register commands
     registerCommands(context, chatPanelProvider);
     registerCodeActions(context, chatPanelProvider);

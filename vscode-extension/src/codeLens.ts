@@ -19,7 +19,8 @@ export class RepoPilotCodeLensProvider implements vscode.CodeLensProvider {
         let match;
         while ((match = functionRegex.exec(text)) !== null) {
             const line = document.positionAt(match.index).line;
-            const range = new vscode.Range(line, 0, line, 0);
+            const lineEnd = document.lineAt(line).range.end.character;
+            const range = new vscode.Range(line, 0, line, lineEnd);
 
             // "Ask RepoPilot" command
             const cmd: vscode.Command = {

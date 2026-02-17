@@ -160,7 +160,9 @@ Return JSON:
         """Fast fallback if LLM routing fails."""
         q = query.lower()
         
-        gen_keywords = ["add", "create", "implement", "build", "write code", "generate", "refactor", "modify", "change"]
+        gen_keywords = ["add", "create", "implement", "build", "write code", "generate",
+                        "refactor", "modify", "change", "proceed", "go ahead", "make the code",
+                        "generate the code", "create the code", "original request"]
         test_keywords = ["test", "pytest", "unittest", "write tests"]
         
         # REFUSE already handled by pre-check, but double-check here

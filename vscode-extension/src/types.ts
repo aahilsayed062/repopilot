@@ -234,6 +234,7 @@ export interface PyTestRequest {
     target_file?: string;
     target_function?: string;
     custom_request?: string;
+    generated_code?: Array<{ file_path: string; content: string }>;
 }
 
 export interface PyTestResponse {
@@ -268,7 +269,9 @@ export type WebviewToExtensionMessage =
     | { type: 'CANCEL_REQUEST' }
     | { type: 'ACCEPT_FILE'; file_path: string }
     | { type: 'REJECT_FILE'; file_path: string }
-    | { type: 'ACCEPT_ALL' };
+    | { type: 'ACCEPT_ALL' }
+    | { type: 'EXPORT_CHAT' }
+    | { type: 'PYTEST_DEMO' };
 
 
 // Messages from Extension to Webview

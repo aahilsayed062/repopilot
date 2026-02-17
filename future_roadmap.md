@@ -17,7 +17,7 @@ analyse
 |---|---------|--------|-----------|
 | 1 | Dynamic Multi-Agent Routing | ✅ **DONE** | `agent_router.py`, `chat.py /smart` |
 | 2 | Iterative PyTest-Driven Refinement | ✅ **DONE** | `refinement_loop.py`, `chat.py /refine` |
-| 3 | LLM vs LLM Evaluation Layer | 🟡 **PARTIAL** | `evaluator.py` ✅ created, endpoint & pipeline wiring ❌ |
+| 3 | LLM vs LLM Evaluation Layer | ✅ **DONE** | `evaluator.py`, `chat.py /evaluate`, wired into `/smart` pipeline |
 | 4 | Risk & Change Impact Analysis | ✅ **DONE** | `impact_analyzer.py`, `chat.py /impact` |
 | 5 | UX: Copilot-Style Apply & Impact | ✅ **DONE** | `chatPanel.ts`, `chat.js`, `responseFormatter.ts` |
 

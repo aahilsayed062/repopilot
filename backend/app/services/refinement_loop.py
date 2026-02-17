@@ -263,7 +263,7 @@ Return JSON:
                     stripped = line.strip()
                     if any(kw in stripped for kw in
                            ["FAILED", "ERROR", "AssertionError",
-                            "AssertionError", "ModuleNotFoundError",
+                            "ModuleNotFoundError",
                             "ImportError", "SyntaxError"]):
                         failures.append(stripped)
 

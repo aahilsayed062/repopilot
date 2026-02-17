@@ -206,12 +206,18 @@ async def _retrieve_context_hint_chunks(repo_id: str, file_hints: List[str]) -> 
 
 
 # PyTest Generation Models
+class GeneratedCodeContext(BaseModel):
+    """Context about code that was just generated (for accurate test targeting)."""
+    file_path: str
+    content: str
+
 class PyTestRequest(BaseModel):
     """Request for PyTest generation."""
     repo_id: str
     target_file: Optional[str] = None
     target_function: Optional[str] = None
     custom_request: Optional[str] = None
+    generated_code: Optional[List[GeneratedCodeContext]] = None
 
 
 class PyTestResponse(BaseModel):
@@ -483,7 +489,8 @@ async def generate_pytest(request: PyTestRequest) -> PyTestResponse:
             repo_id=request.repo_id,
             target_file=request.target_file,
             target_function=request.target_function,
-            custom_request=request.custom_request
+            custom_request=request.custom_request,
+            generated_code=[{"file_path": g.file_path, "content": g.content} for g in request.generated_code] if request.generated_code else None
         )
         return PyTestResponse(**result)
     except Exception as e:

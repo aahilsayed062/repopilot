@@ -320,6 +320,7 @@ export async function generatePyTest(
         targetFile?: string;
         targetFunction?: string;
         customRequest?: string;
+        generatedCode?: Array<{ file_path: string; content: string }>;
     } = {}
 ): Promise<PyTestResponse> {
     const body: PyTestRequest = {
@@ -327,6 +328,7 @@ export async function generatePyTest(
         target_file: options.targetFile,
         target_function: options.targetFunction,
         custom_request: options.customRequest,
+        generated_code: options.generatedCode,
     };
 
     return fetchJson<PyTestResponse>('/chat/pytest', {

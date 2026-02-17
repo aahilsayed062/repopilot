@@ -27,6 +27,7 @@
     const exportBtn = document.getElementById('btn-export');
     const clearBtn = document.getElementById('btn-clear');
     const cancelBtn = document.getElementById('btn-cancel');
+    const pytestDemoBtn = document.getElementById('btn-pytest-demo');
 
     // Welcome actions
     const welcomeIndex = document.getElementById('welcome-index');
@@ -157,6 +158,11 @@
 
     // ── Add Message ───────────────────────────────────────────
     function addMessage(role, content, citations, buttons) {
+        // Reset accept tracking when a new user message is sent
+        if (role === 'user') {
+            acceptedFiles = {};
+            acceptAllClicked = false;
+        }
         // Only remove thinking if this is a real message (not empty streaming placeholder)
         if (content && content.trim()) {
             removeThinking();
@@ -216,17 +222,40 @@
         saveCurrentSession();
     }
 
+    // Track files that have been accepted/rejected so updateLastMessage preserves their state
+    var acceptedFiles = {}; // { filePath: 'accepted' | 'rejected' }
+    var acceptAllClicked = false;
+
     function updateLastMessage(content, citations) {
-        const lastMsg = messagesContainer.lastElementChild;
-        if (!lastMsg || !lastMsg.classList.contains('assistant')) {
+        // Find the last ASSISTANT message (not just lastElementChild which may be a system msg)
+        const allMsgs = messagesContainer.querySelectorAll('.message.assistant');
+        const lastMsg = allMsgs.length > 0 ? allMsgs[allMsgs.length - 1] : null;
+        if (!lastMsg) {
             addMessage('assistant', content, citations);
             return;
         }
+
+        // Preserve existing msg-actions buttons before rebuild
+        var existingActionsDiv = lastMsg.querySelector('.msg-actions');
+        var existingActionsHtml = existingActionsDiv ? existingActionsDiv.outerHTML : '';
 
         const contentDiv = lastMsg.querySelector('.msg-content');
         if (contentDiv) {
             // Rebuild content
             contentDiv.innerHTML = parseMarkdown(content);
+
+            // Re-append msg-actions buttons if they existed before rebuild
+            if (existingActionsHtml) {
+                contentDiv.insertAdjacentHTML('afterend', existingActionsHtml);
+                // Remove duplicate — the old one was already replaced
+                var actionsDivs = lastMsg.querySelectorAll('.msg-actions');
+                if (actionsDivs.length > 1) {
+                    // Keep only the last one (freshly inserted)
+                    for (var i = 0; i < actionsDivs.length - 1; i++) {
+                        actionsDivs[i].remove();
+                    }
+                }
+            }
 
             // Re-add citations if provided
             if (citations && citations.length > 0) {
@@ -244,6 +273,41 @@
             // Re-inject per-file buttons and rebind ALL listeners on this message
             injectPerFileButtons(lastMsg);
             bindMessageListeners(lastMsg);
+
+            // Restore accepted/rejected state for per-file buttons
+            Object.keys(acceptedFiles).forEach(function (fp) {
+                var bar = null;
+                lastMsg.querySelectorAll('.file-accept-btn').forEach(function (btn) {
+                    if (btn.getAttribute('data-file') === fp) {
+                        bar = btn.closest('.file-action-bar');
+                    }
+                });
+                lastMsg.querySelectorAll('.file-reject-btn').forEach(function (btn) {
+                    if (btn.getAttribute('data-file') === fp) {
+                        bar = btn.closest('.file-action-bar');
+                    }
+                });
+                if (bar) {
+                    bar.style.opacity = '0.4';
+                    if (acceptedFiles[fp] === 'accepted') {
+                        bar.innerHTML = '<span style="color:var(--success,#48bb78);font-size:11px">✅ Accepted</span>';
+                    } else {
+                        bar.innerHTML = '<span style="color:var(--error,#e53e3e);font-size:11px">❌ Skipped</span>';
+                    }
+                }
+            });
+
+            // Restore Accept All button state if already clicked
+            if (acceptAllClicked) {
+                lastMsg.querySelectorAll('.msg-action-btn').forEach(function (btn) {
+                    if (btn.getAttribute('data-action') === 'ACCEPT_ALL') {
+                        btn.disabled = true;
+                        btn.style.opacity = '0.5';
+                        btn.style.pointerEvents = 'none';
+                        btn.textContent = '✅ Accepted';
+                    }
+                });
+            }
         }
 
         scrollToBottom();
@@ -265,6 +329,11 @@
                 '<button class="copy-btn">' + SVG.copy + ' Copy</button></div>' +
                 '<pre class="code-content"><code>' + code.trim() + '</code></pre></div>';
         });
+
+        // Blockquotes (must come before inline code to handle > properly)
+        html = html.replace(/^&gt; (.+)$/gm, '<blockquote style="border-left:3px solid var(--vscode-textBlockQuote-border, #444);padding:4px 10px;margin:6px 0;opacity:0.85;font-size:12px">$1</blockquote>');
+        // Collapse consecutive blockquotes
+        html = html.replace(/<\/blockquote>\s*<blockquote[^>]*>/g, '<br>');
 
         // Inline code
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -340,10 +409,30 @@
             });
         });
 
-        // Action buttons (Accept All, Run Tests, etc.)
+        // Action buttons (Accept All, Run Tests, Generate Tests, etc.)
         container.querySelectorAll('.msg-action-btn').forEach(function (btn) {
             btn.addEventListener('click', function () {
-                vscode.postMessage({ type: btn.getAttribute('data-action') });
+                var action = btn.getAttribute('data-action');
+                vscode.postMessage({ type: action });
+
+                // Disable Accept All after click and show accepted state
+                if (action === 'ACCEPT_ALL') {
+                    acceptAllClicked = true;
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.style.pointerEvents = 'none';
+                    btn.textContent = '✅ Accepted';
+                    // Also mark all per-file buttons as accepted
+                    container.querySelectorAll('.file-action-bar').forEach(function (bar) {
+                        bar.style.opacity = '0.4';
+                        bar.innerHTML = '<span style="color:var(--success,#48bb78);font-size:11px">✅ Accepted</span>';
+                    });
+                    // Track all files
+                    container.querySelectorAll('.file-accept-btn').forEach(function (b) {
+                        var fp = b.getAttribute('data-file');
+                        if (fp) acceptedFiles[fp] = 'accepted';
+                    });
+                }
             });
         });
 
@@ -352,8 +441,9 @@
             btn.addEventListener('click', function () {
                 var filePath = btn.getAttribute('data-file');
                 vscode.postMessage({ type: 'ACCEPT_FILE', file_path: filePath });
+                acceptedFiles[filePath] = 'accepted';
                 btn.closest('.file-action-bar').style.opacity = '0.4';
-                btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--success,#48bb78);font-size:11px">✅ Applied</span>';
+                btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--success,#48bb78);font-size:11px">✅ Accepted</span>';
             });
         });
 
@@ -362,6 +452,7 @@
             btn.addEventListener('click', function () {
                 var filePath = btn.getAttribute('data-file');
                 vscode.postMessage({ type: 'REJECT_FILE', file_path: filePath });
+                acceptedFiles[filePath] = 'rejected';
                 btn.closest('.file-action-bar').style.opacity = '0.4';
                 btn.closest('.file-action-bar').innerHTML = '<span style="color:var(--error,#e53e3e);font-size:11px">❌ Skipped</span>';
             });
@@ -787,6 +878,13 @@
         toggleSettings(false);
     });
 
+    // PyTest Demo
+    if (pytestDemoBtn) pytestDemoBtn.addEventListener('click', function () {
+        addMessage('user', '🧪 PyTest Refinement Demo');
+        vscode.postMessage({ type: 'PYTEST_DEMO' });
+        toggleSettings(false);
+    });
+
     // Welcome actions
     if (welcomeIndex) welcomeIndex.addEventListener('click', function () {
         vscode.postMessage({ type: 'INDEX_WORKSPACE' });
@@ -835,6 +933,8 @@
                 setLoading(msg.loading);
                 break;
             case 'MESSAGE_CLEAR':
+                acceptedFiles = {};
+                acceptAllClicked = false;
                 showWelcome();
                 break;
             case 'ERROR_TOAST':

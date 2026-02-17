@@ -122,6 +122,12 @@ Decision rules (choose ONE):
 
 IMPORTANT: Prefer MERGE_FEEDBACK when there are fixable issues. Only use ACCEPT_ORIGINAL for genuinely clean code. Only use REQUEST_REVISION for unfixable problems.
 
+IMPORTANT for improved_code_by_file:
+- When decision is MERGE_FEEDBACK, you MUST write the ACTUAL COMPLETE improved source code in the "code" field.
+- The code MUST be real, compilable/runnable code — NOT a description or placeholder.
+- Copy the original generated code and apply your fixes to produce the final version.
+- If you cannot produce improved code, use ACCEPT_ORIGINAL instead.
+
 Return JSON with this schema:
 {{
   "decision": "ACCEPT_ORIGINAL|REQUEST_REVISION|MERGE_FEEDBACK",
@@ -130,7 +136,7 @@ Return JSON with this schema:
   "confidence": 0-1 number,
   "merged_issues": ["merged issue"],
   "priority_fixes": ["ordered high-impact fix"],
-  "improved_code_by_file": [{{"file_path":"...", "code":"full improved file content"}}]
+  "improved_code_by_file": [{{"file_path":"the_file.ext", "code":"#include <iostream>\nint main() {{ ... actual fixed code ... }}"}}]
 }}"""
 
     async def evaluate_generation(
@@ -276,6 +282,43 @@ Return JSON with this schema:
             if not isinstance(improved_code, list):
                 improved_code = []
 
+            # Validate improved code — reject placeholder/description text
+            validated_improved = []
+            _PLACEHOLDER_PHRASES = {
+                "full improved file content", "improved file content",
+                "actual fixed code", "your improved code here",
+                "improved code here", "write code here",
+            }
+            for item in improved_code:
+                if not isinstance(item, dict):
+                    continue
+                code_val = str(item.get("code", "")).strip()
+                # Reject if it's a known placeholder phrase
+                if code_val.lower() in _PLACEHOLDER_PHRASES:
+                    logger.warning("controller_placeholder_code_rejected",
+                                   file=item.get("file_path"),
+                                   code_preview=code_val[:80])
+                    continue
+                # Reject if it's too short to be real code (< 20 chars)
+                if len(code_val) < 20:
+                    logger.warning("controller_code_too_short",
+                                   file=item.get("file_path"),
+                                   length=len(code_val))
+                    continue
+                # Reject if it has no code-like characters
+                has_code_chars = any(c in code_val for c in ('{', '(', '=', ';', 'def ', 'class ', 'import ', '#include'))
+                if not has_code_chars:
+                    logger.warning("controller_code_not_code_like",
+                                   file=item.get("file_path"),
+                                   code_preview=code_val[:80])
+                    continue
+                validated_improved.append(item)
+
+            # If MERGE_FEEDBACK but no valid improved code, downgrade to ACCEPT_ORIGINAL
+            if decision == "MERGE_FEEDBACK" and not validated_improved:
+                logger.warning("merge_feedback_no_valid_code_downgrading_to_accept")
+                decision = "ACCEPT_ORIGINAL"
+
             return ControllerVerdict(
                 decision=decision,
                 reasoning=str(data.get("reasoning", "")).strip(),
@@ -283,9 +326,7 @@ Return JSON with this schema:
                 confidence=self._normalize_confidence(data.get("confidence", 0.0)),
                 merged_issues=self._to_string_list(data.get("merged_issues")),
                 priority_fixes=self._to_string_list(data.get("priority_fixes")),
-                improved_code_by_file=[
-                    item for item in improved_code if isinstance(item, dict)
-                ],
+                improved_code_by_file=validated_improved,
             )
         except Exception as e:
             logger.error("controller_evaluation_failed", error=str(e))

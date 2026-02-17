@@ -226,6 +226,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             case 'ACCEPT_ALL':
                 await this._handleAcceptAll();
                 break;
+
+            case 'PYTEST_DEMO':
+                await this._handlePytestDemo();
+                break;
+
+            default:
+                console.warn(`[RepoPilot] Unknown webview message type: ${(message as any).type}`);
+                break;
         }
     }
 
@@ -244,6 +252,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: 'LOADING', loading: true });
         this._abortController = new AbortController();
 
+        // Save previous diffs so follow-up requests can reference the last generated code
+        const previousDiffs = [...this._lastGeneratedDiffs];
+
         // Clear stale diffs/tests from previous requests to prevent
         // Accept buttons applying code from an old generation
         this._lastGeneratedDiffs = [];
@@ -258,6 +269,17 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 this._pendingFileContext = '';
             }
 
+            // If the user is asking to fix/correct/update code and we have previous diffs,
+            // inject the previously generated code as context so the LLM updates the SAME file
+            const FOLLOWUP_KEYWORDS = /\b(fix|correct|handle|improve|update|change|modify|error|bug|issue|wrong|mistake)\b/i;
+            if (previousDiffs.length > 0 && FOLLOWUP_KEYWORDS.test(question)) {
+                const prevContext = previousDiffs.map((d: any) => {
+                    const code = d.code || d.content || '';
+                    return `[Previously Generated File: ${d.file_path}]\n${code}`;
+                }).join('\n\n');
+                questionWithContext = question + '\n\n[Existing File Content]\n' + prevContext;
+            }
+
             // Build chat_history from _history for context continuity
             const chatHistory = this._history
                 .filter(m => m.type === 'MESSAGE_APPEND' && (m.role === 'user' || m.role === 'assistant'))
@@ -265,8 +287,18 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 .map(m => ({ role: (m as any).role as string, content: ((m as any).content as string || '').slice(0, 500) }));
 
             // Heuristic: simple explain/question queries → stream for better UX
-            const GEN_KEYWORDS = /\b(add|create|modify|implement|generate|write|build|fix|refactor|change|update|delete|remove|rename|move|extract|convert|replace|insert|make)\b/i;
-            const isLikelyExplain = !GEN_KEYWORDS.test(question);
+            // Also treat follow-ups with previous code as GENERATE (not streaming explain)
+            const GEN_KEYWORDS = /\b(add|create|modify|implement|generate|write|build|fix|refactor|change|update|delete|remove|rename|move|extract|convert|replace|insert|make|correct|handle|improve|rewrite|optimize|sort|order)\b/i;
+            // "Proceed", "yes", "go ahead" etc. after a code plan → should trigger GENERATE, not EXPLAIN
+            const PROCEED_KEYWORDS = /^\s*(proceed|yes|go ahead|do it|go|continue|ok|okay|sure|start|begin|make it|let'?s go|confirm|approved?)\s*\.?\s*$/i;
+            const PROCEED_PHRASES = /\b(proceed|go ahead|make the code|do it|start coding|write the code|generate the code|create the code|make the file|write it|create it)\b/i;
+            const hasRecentCode = previousDiffs.length > 0 && FOLLOWUP_KEYWORDS.test(question);
+            // Check if chat history contains a previous plan/generation context
+            const historyHasCodeContext = chatHistory.some(h =>
+                /\b(implement|generate|create|binary search|merge sort|quick sort|linked list|code|\.cpp|\.py|\.java|\.js|\.ts)\b/i.test(h.content)
+            );
+            const isProceedAfterPlan = (PROCEED_KEYWORDS.test(question) || PROCEED_PHRASES.test(question)) && historyHasCodeContext;
+            const isLikelyExplain = !GEN_KEYWORDS.test(question) && !hasRecentCode && !isProceedAfterPlan;
 
             if (isLikelyExplain) {
                 // Stream token-by-token for explain-only queries
@@ -284,7 +316,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                         break;
                     }
                     accumulated += token;
-                    this.postMessage({ type: 'MESSAGE_UPDATE', content: accumulated });
+                    // Strip [S1], [S2] etc. citation markers from streamed text for cleaner display
+                    const cleanAccumulated = accumulated.replace(/\s*-?\s*\[S\d+\]/g, '');
+                    this.postMessage({ type: 'MESSAGE_UPDATE', content: cleanAccumulated });
                 }
 
                 this.postMessage({ type: 'LOADING', loading: false });
@@ -292,6 +326,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             }
 
             // Use /chat/smart for dynamic multi-agent routing (Feature 1)
+            // When user says "Proceed" after a plan, enrich the query so the router
+            // and generator understand this is a code generation request
+            if (isProceedAfterPlan) {
+                const lastAssistant = chatHistory.filter(h => h.role === 'assistant').pop();
+                const lastUser = chatHistory.filter(h => h.role === 'user').pop();
+                const contextHint = lastUser?.content || lastAssistant?.content || '';
+                questionWithContext = `Generate the code as discussed. Original request: ${contextHint}\nUser confirmation: ${question}`;
+            }
+
             const smartResult = await api.smartChat(
                 this._repoId, questionWithContext, chatHistory, contextFileHints,
                 this._abortController?.signal
@@ -320,8 +363,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             }
             content += '\n\n';
 
-            // Main answer
-            content += smartResult.answer || '';
+            // Main answer — strip [S1], [S2] etc. citation markers for clean display
+            const cleanAnswer = (smartResult.answer || '').replace(/\s*-?\s*\[S\d+\]/g, '');
+            content += cleanAnswer;
 
             // If generation results exist, format them
             if (smartResult.generate && typeof smartResult.generate === 'object' && !('error' in smartResult.generate)) {
@@ -364,29 +408,35 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 if (smartResult.evaluation.controller?.decision === 'MERGE_FEEDBACK'
                     && smartResult.evaluation_improved_code
                     && smartResult.evaluation_improved_code.length > 0) {
-                    this._lastGeneratedDiffs = smartResult.evaluation_improved_code.map((ic: any) => ({
-                        file_path: ic.file_path,
-                        content: ic.code,
-                        code: ic.code,
-                        diff: ic.code,
-                    }));
-                    content += `\n\n> ✨ **Merged feedback applied** — Accept buttons now use the improved code.`;
+                    // Validate that improved code is actual code, not placeholder text
+                    const validImproved = smartResult.evaluation_improved_code.filter((ic: any) => {
+                        const code = (ic.code || '').trim();
+                        if (code.length < 20) { return false; }
+                        const placeholders = ['full improved file content', 'improved file content',
+                            'actual fixed code', 'your improved code here'];
+                        if (placeholders.includes(code.toLowerCase())) { return false; }
+                        // Must contain code-like characters
+                        return /[{(=;]|\bdef\b|\bclass\b|\bimport\b|#include/.test(code);
+                    });
+                    if (validImproved.length > 0) {
+                        // Use original file_path from generated diffs when possible
+                        // (controller may return different/wrong file paths)
+                        const originalPaths = this._lastGeneratedDiffs.map((d: any) => d.file_path);
+                        this._lastGeneratedDiffs = validImproved.map((ic: any, idx: number) => ({
+                            file_path: originalPaths[idx] || ic.file_path,
+                            content: ic.code,
+                            code: ic.code,
+                            diff: ic.code,
+                        }));
+                        content += `\n\n> ✨ **Merged feedback applied** — Accept buttons now use the improved code.`;
+                    }
                 }
             }
 
-            // Impact analysis on generated code
+            // Show initial content with loading indicator for impact/eval
+            const baseContent = content;
             if (this._lastGeneratedDiffs.length > 0 && this._repoId) {
-                try {
-                    const changedFiles = this._lastGeneratedDiffs.map((d: any) => d.file_path);
-                    const codeChanges = this._lastGeneratedDiffs
-                        .map((d: any) => `--- ${d.file_path} ---\n${d.diff || ''}`)
-                        .join('\n');
-                    const impact = await api.analyzeImpact(this._repoId, changedFiles, codeChanges);
-                    const impactFormatted = formatImpactReport(impact);
-                    content += `\n\n---\n${impactFormatted}`;
-                } catch {
-                    // Impact analysis is non-critical
-                }
+                content += `\n\n---\n⏳ **Analyzing impact & evaluating code...**`;
             }
 
             // Build buttons
@@ -394,8 +444,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             if (this._lastGeneratedDiffs.length > 0) {
                 buttons.push({ label: '✅ Accept All', action: 'ACCEPT_ALL' });
             }
-            if (this._lastGeneratedTests && this._lastGeneratedTests.trim().length > 0) {
-                buttons.push({ label: '🧪 Run Tests', action: 'RUN_TESTS' });
+            if (this._isValidTestCode(this._lastGeneratedTests)) {
+                buttons.push({ label: '▶️ Run Tests', action: 'RUN_TESTS' });
+            } else if (this._lastGeneratedDiffs.length > 0) {
+                buttons.push({ label: '🧪 Generate Tests', action: 'GENERATE_TESTS' });
             }
 
             this.postMessage({
@@ -410,6 +462,29 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 })),
                 buttons: buttons.length > 0 ? buttons : undefined,
             });
+
+            // Show inline diff preview in editor (Copilot-style green/red lines)
+            if (this._lastGeneratedDiffs.length > 0) {
+                await this._showInlineDiffPreview(this._lastGeneratedDiffs);
+            }
+
+            // Impact analysis on generated code (runs after message is shown)
+            if (this._lastGeneratedDiffs.length > 0 && this._repoId) {
+                let finalContent = baseContent;
+                try {
+                    const changedFiles = this._lastGeneratedDiffs.map((d: any) => d.file_path);
+                    const codeChanges = this._lastGeneratedDiffs
+                        .map((d: any) => `--- ${d.file_path} ---\n${d.diff || ''}`)
+                        .join('\n');
+                    const impact = await api.analyzeImpact(this._repoId, changedFiles, codeChanges);
+                    const impactFormatted = formatImpactReport(impact);
+                    finalContent += `\n\n---\n${impactFormatted}`;
+                } catch {
+                    // Impact analysis is non-critical
+                }
+                // Remove loading placeholder with final content
+                this.postMessage({ type: 'MESSAGE_UPDATE', content: finalContent });
+            }
 
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
@@ -439,6 +514,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     private _lastGeneratedDiffs: any[] = [];
     private _lastGeneratedTests: string = '';
     private _pendingFileContext: string = '';
+
+    /** Check if test content looks like actual runnable Python code */
+    private _isValidTestCode(code: string): boolean {
+        if (!code || !code.trim()) { return false; }
+        return /\b(def |import |class |assert )/.test(code.trim());
+    }
 
     /**
      * Handle generate code
@@ -478,19 +559,33 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             if (this._lastGeneratedDiffs.length > 0) {
                 buttons.push({ label: '✅ Accept All', action: 'ACCEPT_ALL' });
             }
-            if (this._lastGeneratedTests && this._lastGeneratedTests.trim().length > 0) {
-                buttons.push({ label: '🧪 Run Tests', action: 'RUN_TESTS' });
+            if (this._isValidTestCode(this._lastGeneratedTests)) {
+                buttons.push({ label: '▶️ Run Tests', action: 'RUN_TESTS' });
+            } else if (this._lastGeneratedDiffs.length > 0) {
+                buttons.push({ label: '🧪 Generate Tests', action: 'GENERATE_TESTS' });
+            }
+
+            // Show content immediately with loading indicator
+            let displayContent = formatted;
+            if (this._lastGeneratedDiffs.length > 0 && this._repoId) {
+                displayContent += '\n\n---\n⏳ **Analyzing impact & evaluating code...**';
             }
 
             this.postMessage({
                 type: 'MESSAGE_APPEND',
                 role: 'assistant',
-                content: formatted,
+                content: displayContent,
                 buttons: buttons.length > 0 ? buttons : undefined
             });
 
+            // Show inline diff preview in editor (Copilot-style)
+            if (this._lastGeneratedDiffs.length > 0) {
+                await this._showInlineDiffPreview(this._lastGeneratedDiffs);
+            }
+
             // Feature 4: Auto-run Impact Analysis (compact inline)
             if (this._lastGeneratedDiffs.length > 0 && this._repoId) {
+                let updatedContent = formatted;
                 try {
                     const changedFiles = this._lastGeneratedDiffs.map((d: any) => d.file_path);
                     const codeChanges = this._lastGeneratedDiffs
@@ -498,50 +593,31 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                         .join('\n');
                     const impact = await api.analyzeImpact(this._repoId, changedFiles, codeChanges);
                     const impactFormatted = formatImpactReport(impact);
-                    // Append to the same message (not a separate bubble)
-                    let updatedContent = formatted + '\n\n---\n' + impactFormatted;
-
-                    // Feature 3: Auto-run LLM Evaluation
-                    try {
-                        const evalResult = await api.evaluateCode(
-                            request,
-                            this._lastGeneratedDiffs,
-                            this._lastGeneratedTests,
-                        );
-                        if (evalResult.enabled) {
-                            const evalFormatted = formatEvaluationReport(evalResult);
-                            updatedContent += '\n\n---\n' + evalFormatted;
-                        }
-                    } catch (evalErr) {
-                        console.warn('Evaluation failed (non-critical):', evalErr);
-                    }
-
-                    this.postMessage({
-                        type: 'MESSAGE_UPDATE',
-                        content: updatedContent,
-                    });
+                    updatedContent += '\n\n---\n' + impactFormatted;
                 } catch (impactErr) {
-                    // Impact analysis is non-critical — don't block on failure
                     console.warn('Impact analysis failed (non-critical):', impactErr);
-
-                    // Still try evaluation even if impact fails
-                    try {
-                        const evalResult = await api.evaluateCode(
-                            request,
-                            this._lastGeneratedDiffs,
-                            this._lastGeneratedTests,
-                        );
-                        if (evalResult.enabled) {
-                            const evalFormatted = formatEvaluationReport(evalResult);
-                            this.postMessage({
-                                type: 'MESSAGE_UPDATE',
-                                content: formatted + '\n\n---\n' + evalFormatted,
-                            });
-                        }
-                    } catch {
-                        // Both non-critical
-                    }
                 }
+
+                // Feature 3: Auto-run LLM Evaluation
+                try {
+                    const evalResult = await api.evaluateCode(
+                        request,
+                        this._lastGeneratedDiffs,
+                        this._lastGeneratedTests,
+                    );
+                    if (evalResult.enabled) {
+                        const evalFormatted = formatEvaluationReport(evalResult);
+                        updatedContent += '\n\n---\n' + evalFormatted;
+                    }
+                } catch (evalErr) {
+                    console.warn('Evaluation failed (non-critical):', evalErr);
+                }
+
+                // Replace loading indicator with final results
+                this.postMessage({
+                    type: 'MESSAGE_UPDATE',
+                    content: updatedContent,
+                });
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
@@ -599,10 +675,30 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 content += `\n### Final Tests\n\`\`\`python\n${result.final_tests}\n\`\`\`\n`;
             }
 
+            // Populate _lastGeneratedDiffs so Accept/Apply buttons work
+            if (result.final_code) {
+                this._lastGeneratedDiffs = [{
+                    file_path: 'refined_code.py',
+                    content: result.final_code,
+                    explanation: 'PyTest-driven refined code from iterative loop',
+                }];
+            }
+            if (result.final_tests) {
+                this._lastGeneratedDiffs.push({
+                    file_path: 'test_refined.py',
+                    content: result.final_tests,
+                    explanation: 'Generated pytest tests for refined code',
+                });
+            }
+
             this.postMessage({
                 type: 'MESSAGE_APPEND',
                 role: 'assistant',
                 content,
+                buttons: [
+                    { label: '✅ Apply Refined Code', action: 'APPLY_CHANGES' },
+                    { label: '🧪 Run Tests', action: 'RUN_TESTS' },
+                ],
             });
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Refinement failed';
@@ -612,6 +708,64 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                 content: formatSafeRefusal('Refinement failed.', ['Check backend logs', 'Ensure pytest is installed']),
             });
             this.postMessage({ type: 'ERROR_TOAST', message });
+        } finally {
+            this.postMessage({ type: 'LOADING', loading: false });
+        }
+    }
+
+    /**
+     * Handle PyTest Demo — mock simulation showing the refinement loop in action
+     * Shows: buggy code → pytest failure → LLM fix → tests pass
+     */
+    private async _handlePytestDemo(): Promise<void> {
+        this.postMessage({ type: 'LOADING', loading: true });
+
+        // Simulate the refinement loop with timed steps
+        const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+        try {
+            // Step 1: Show the "buggy" code
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'assistant',
+                content: `## 🧪 PyTest Refinement Demo\n\nThis demonstrates how RepoPilot's **iterative refinement loop** works. We'll walk through a simulated cycle:\n\n> **Buggy Code → PyTest Failure → LLM Fix → Tests Pass**\n\n---\n\n### Step 1: Initial (Buggy) Code\n\n\`\`\`python\n# calculator.py\ndef add(a, b):\n    return a - b  # BUG: subtraction instead of addition\n\ndef multiply(a, b):\n    return a + b  # BUG: addition instead of multiplication\n\ndef divide(a, b):\n    return a / b  # BUG: no zero-division check\n\`\`\``,
+            });
+
+            await delay(1500);
+
+            // Step 2: Show generated pytest and failure
+            this.postMessage({
+                type: 'MESSAGE_UPDATE',
+                content: `## 🧪 PyTest Refinement Demo\n\nThis demonstrates how RepoPilot's **iterative refinement loop** works.\n\n> **Buggy Code → PyTest Failure → LLM Fix → Tests Pass**\n\n---\n\n### Step 1: Initial (Buggy) Code\n\n\`\`\`python\n# calculator.py\ndef add(a, b):\n    return a - b  # BUG: subtraction instead of addition\n\ndef multiply(a, b):\n    return a + b  # BUG: addition instead of multiplication\n\ndef divide(a, b):\n    return a / b  # BUG: no zero-division check\n\`\`\`\n\n### Step 2: Generated PyTests\n\n\`\`\`python\n# test_calculator.py\nimport pytest\nfrom calculator import add, multiply, divide\n\ndef test_add():\n    assert add(2, 3) == 5\n    assert add(-1, 1) == 0\n    assert add(0, 0) == 0\n\ndef test_multiply():\n    assert multiply(3, 4) == 12\n    assert multiply(-2, 5) == -10\n    assert multiply(0, 100) == 0\n\ndef test_divide():\n    assert divide(10, 2) == 5.0\n    assert divide(7, 2) == 3.5\n\ndef test_divide_by_zero():\n    with pytest.raises(ValueError):\n        divide(1, 0)\n\`\`\`\n\n### ❌ Iteration 1: PyTest Output (3 FAILED)\n\n\`\`\`\n$ pytest test_calculator.py -v\n\ntest_calculator.py::test_add FAILED\n  assert add(2, 3) == 5  →  got -1\ntest_calculator.py::test_multiply FAILED\n  assert multiply(3, 4) == 12  →  got 7\ntest_calculator.py::test_divide_by_zero FAILED\n  ZeroDivisionError: division by zero\n\nFAILED 3  |  PASSED 1\n\`\`\``,
+            });
+
+            await delay(2000);
+
+            // Step 3: Show LLM fix
+            this.postMessage({
+                type: 'MESSAGE_UPDATE',
+                content: `## 🧪 PyTest Refinement Demo\n\nThis demonstrates how RepoPilot's **iterative refinement loop** works.\n\n> **Buggy Code → PyTest Failure → LLM Fix → Tests Pass**\n\n---\n\n### Step 1: Initial (Buggy) Code\n\n\`\`\`python\n# calculator.py (original — 3 bugs)\ndef add(a, b):\n    return a - b  # BUG\ndef multiply(a, b):\n    return a + b  # BUG\ndef divide(a, b):\n    return a / b  # BUG: no zero check\n\`\`\`\n\n### ❌ Iteration 1: 3 tests failed\n\n### Step 3: 🤖 LLM Analyzes Failures & Fixes Code\n\nThe LLM reads the pytest output and applies targeted fixes:\n\n\`\`\`python\n# calculator.py (FIXED by LLM — iteration 2)\ndef add(a, b):\n    return a + b  # FIXED: changed - to +\n\ndef multiply(a, b):\n    return a * b  # FIXED: changed + to *\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b  # FIXED: added zero-division guard\n\`\`\`\n\n### ✅ Iteration 2: PyTest Output (ALL PASSED)\n\n\`\`\`\n$ pytest test_calculator.py -v\n\ntest_calculator.py::test_add PASSED\ntest_calculator.py::test_multiply PASSED\ntest_calculator.py::test_divide PASSED\ntest_calculator.py::test_divide_by_zero PASSED\n\nPASSED 4  |  FAILED 0  ✅\n\`\`\`\n\n---\n\n### 📊 Refinement Summary\n\n**Success:** ✅ Yes\n**Iterations:** 2/4\n**Bugs Fixed:**  3 (operator errors + missing guard)\n\n| Iteration | Status | Action |\n|-----------|--------|--------|\n| 1 | ❌ 3 failed | Detected: wrong operators, missing guard |\n| 2 | ✅ All pass | Fixed: \`-→+\`, \`+→*\`, added zero check |\n\n> This is how Feature 2 (Iterative PyTest Refinement) works in production. Use \`/refine <request>\` with a real codebase to try it live!`,
+            });
+
+            // Populate diffs so the Apply button works with the demo code
+            this._lastGeneratedDiffs = [
+                {
+                    file_path: 'calculator.py',
+                    content: `def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a * b\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b\n`,
+                    explanation: 'Fixed calculator: corrected operators and added zero-division guard',
+                },
+                {
+                    file_path: 'test_calculator.py',
+                    content: `import pytest\nfrom calculator import add, multiply, divide\n\ndef test_add():\n    assert add(2, 3) == 5\n    assert add(-1, 1) == 0\n    assert add(0, 0) == 0\n\ndef test_multiply():\n    assert multiply(3, 4) == 12\n    assert multiply(-2, 5) == -10\n    assert multiply(0, 100) == 0\n\ndef test_divide():\n    assert divide(10, 2) == 5.0\n    assert divide(7, 2) == 3.5\n\ndef test_divide_by_zero():\n    with pytest.raises(ValueError):\n        divide(1, 0)\n`,
+                    explanation: 'Generated pytest test suite for calculator',
+                },
+            ];
+
+        } catch (error) {
+            this.postMessage({
+                type: 'ERROR_TOAST',
+                message: 'PyTest demo simulation encountered an error.',
+            });
         } finally {
             this.postMessage({ type: 'LOADING', loading: false });
         }
@@ -696,6 +850,67 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Show Copilot-style inline diff preview in the editor.
+     * Opens a diff editor for each file so the user can see green/red lines.
+     */
+    private async _showInlineDiffPreview(diffs: any[]): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) { return; }
+        const rootUri = workspaceFolders[0].uri;
+
+        for (const diff of diffs) {
+            let newContent = diff.code || diff.content;
+            if (!newContent) { continue; }
+
+            // Strip markdown code fences if LLM wrapped the code
+            newContent = newContent.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```\s*$/, '').trim();
+
+            const cleanPath = diff.file_path.replace(/^[\/\\]/, '');
+            const targetUri = path.isAbsolute(diff.file_path)
+                ? vscode.Uri.file(diff.file_path)
+                : vscode.Uri.joinPath(rootUri, cleanPath);
+
+            try {
+                // Store proposed content for the content provider
+                ChatPanelProvider.proposedContents.set(cleanPath, newContent);
+
+                // Build URI for proposed content (served by RepoPilotProposedContentProvider)
+                const proposedUri = vscode.Uri.parse(
+                    `repopilot-proposed:${cleanPath}`
+                );
+
+                // Check if original file exists
+                let originalUri = targetUri;
+                try {
+                    await vscode.workspace.fs.stat(targetUri);
+                } catch {
+                    // File doesn't exist yet — use an empty untitled as original
+                    ChatPanelProvider.proposedContents.set(`__empty__${cleanPath}`, '');
+                    originalUri = vscode.Uri.parse(`repopilot-proposed:__empty__${cleanPath}`);
+                }
+
+                // Open the VS Code diff editor (green/red lines)
+                const title = `${cleanPath} (RepoPilot Changes)`;
+                await vscode.commands.executeCommand('vscode.diff',
+                    originalUri,
+                    proposedUri,
+                    title,
+                    { preview: true }
+                );
+            } catch (err) {
+                // Diff preview is non-critical — fall back silently
+                console.warn('Inline diff preview failed:', err);
+            }
+        }
+    }
+
+    /**
+     * Static map to store proposed file contents for the content provider.
+     * Shared between instances so the provider can access it.
+     */
+    public static proposedContents: Map<string, string> = new Map();
+
+    /**
      * Accept a single file — write it to disk and open in editor
      */
     private async _handleAcceptFile(filePath: string): Promise<void> {
@@ -705,12 +920,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const content = diff.code || diff.content;
+        let content = diff.code || diff.content;
         if (!content) {
             // Don't fall back to raw diff text (has +/- prefixes) — that would corrupt the file
             this.postMessage({ type: 'ERROR_TOAST', message: `No applicable code content for ${filePath}. Only a diff is available — cannot apply directly.` });
             return;
         }
+
+        // Strip markdown code fences the LLM may have wrapped around the code
+        content = content.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```\s*$/, '').trim();
 
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) {
@@ -761,13 +979,23 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        let appliedCount = 0;
         for (const diff of this._lastGeneratedDiffs) {
-            await this._handleAcceptFile(diff.file_path);
+            try {
+                await this._handleAcceptFile(diff.file_path);
+                appliedCount++;
+            } catch {
+                // Individual file errors are handled inside _handleAcceptFile
+            }
         }
 
-        vscode.window.showInformationMessage(
-            `✅ Applied changes to ${this._lastGeneratedDiffs.length} file(s). Press Ctrl+Z in editor to undo.`
-        );
+        if (appliedCount > 0) {
+            vscode.window.showInformationMessage(
+                `✅ Applied changes to ${appliedCount} file(s). Press Ctrl+Z in editor to undo.`
+            );
+        } else {
+            this.postMessage({ type: 'ERROR_TOAST', message: 'Failed to apply any files.' });
+        }
     }
 
     /**
@@ -776,6 +1004,38 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     private async _handleRunTests(): Promise<void> {
         if (!this._lastGeneratedTests) {
             this.postMessage({ type: 'ERROR_TOAST', message: 'No tests available to run.' });
+            return;
+        }
+
+        // Validate that the test content looks like actual Python code
+        // (small LLMs sometimes echo placeholder text like "test code if applicable")
+        const code = this._lastGeneratedTests.trim();
+        const looksLikePython = /\b(def |import |class |assert )/.test(code);
+
+        // Detect if test content is actually non-Python code (C++, Java, etc.)
+        const looksLikeCpp = /\b(#include|int main|cout|cin|std::)/.test(code);
+        const looksLikeJava = /\bpublic\s+static\s+void\s+main/.test(code);
+        const looksLikeJs = /\b(require\(|describe\(|it\(|expect\()/.test(code);
+
+        if (looksLikeCpp || looksLikeJava) {
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'system',
+                content: '⚠️ Test content appears to be C++/Java code, not Python. '
+                    + 'RepoPilot currently supports running PyTest only. '
+                    + 'You can copy the test code and run it manually with your language\'s test framework.',
+            });
+            return;
+        }
+
+        if (!looksLikePython && !looksLikeJs) {
+            this.postMessage({
+                type: 'MESSAGE_APPEND',
+                role: 'system',
+                content: '⚠️ The generated test content does not appear to be valid Python code. '
+                    + 'Try clicking the **🧪 Generate Tests** button to generate proper test cases, '
+                    + 'or re-run the `/generate` command.',
+            });
             return;
         }
 
@@ -825,8 +1085,16 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: 'LOADING', loading: true });
 
         try {
+            // Pass generated code context so test generator knows what to test
+            const generatedCode = this._lastGeneratedDiffs.map((d: any) => ({
+                file_path: d.file_path || '',
+                content: d.new_content || d.content || '',
+            })).filter((g: any) => g.file_path && g.content);
+
             const response = await api.generatePyTest(this._repoId, {
-                customRequest: customRequest || 'Generate tests for the main functionality'
+                customRequest: customRequest || 'Generate tests for the main functionality',
+                targetFile: generatedCode.length > 0 ? generatedCode[0].file_path : undefined,
+                generatedCode: generatedCode.length > 0 ? generatedCode : undefined,
             });
 
             if (response.success && response.tests) {
@@ -851,6 +1119,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
                     content,
                     citations: response.source_files?.map((f: string) => ({ file_path: f, line_range: '', snippet: '', why: 'Source file' })) || [],
                     buttons: [{ label: '▶️ Run Tests', action: 'RUN_TESTS' }]
+                });
+            } else if (response.success && !response.tests) {
+                // Backend succeeded but no test code was produced
+                this.postMessage({
+                    type: 'MESSAGE_APPEND',
+                    role: 'assistant',
+                    content: '⚠️ Test generation completed but no valid test code was produced. '
+                        + 'This can happen with small models or non-Python code. '
+                        + 'Try asking with `/generate write pytest tests for <specific function>` instead.',
                 });
             } else {
                 throw new Error(response.error || 'Failed to generate tests');
@@ -1117,6 +1394,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           <path d="M10.604.622a.75.75 0 011.06-.012l3.146 3.084a.75.75 0 01-1.05 1.074L12 2.96v5.29a.75.75 0 01-1.5 0V2.96l-1.76 1.808a.75.75 0 01-1.075-1.046L10.604.622z"/>
         </svg>
         Export Chat
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-item" id="btn-pytest-demo">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M5.75 7a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5h-4.5zm-2.5 3a.75.75 0 000 1.5h9.5a.75.75 0 000-1.5h-9.5z"/>
+          <path d="M2 1.75C2 .784 2.784 0 3.75 0h8.5C13.216 0 14 .784 14 1.75v12.5A1.75 1.75 0 0112.25 16h-8.5A1.75 1.75 0 012 14.25V1.75zM3.5 1.75v12.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25h-8.5a.25.25 0 00-.25.25z"/>
+        </svg>
+        🧪 PyTest Demo
       </div>
       <div class="settings-divider"></div>
       <div class="settings-item" id="btn-clear">
