@@ -5,6 +5,7 @@ import { Loader2, GitBranch, Search, Brain, BarChart3 } from "lucide-react";
 
 interface LoadingStateProps {
   step?: number; // 0-3 for animation stages
+  progressPct?: number;
 }
 
 const steps = [
@@ -14,7 +15,9 @@ const steps = [
   { icon: BarChart3, label: "Building visualizations...", color: "text-orange-400" },
 ];
 
-export default function LoadingState({ step = 0 }: LoadingStateProps) {
+export default function LoadingState({ step = 0, progressPct = 0 }: LoadingStateProps) {
+  const safePct = Math.max(0, Math.min(100, Math.round(progressPct)));
+
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] gap-8">
       {/* Spinner */}
@@ -65,6 +68,21 @@ export default function LoadingState({ step = 0 }: LoadingStateProps) {
             </motion.div>
           );
         })}
+      </div>
+
+      {/* Real-time progress */}
+      <div className="w-full max-w-sm space-y-2">
+        <div className="flex items-center justify-between text-xs text-gray-400">
+          <span>Progress</span>
+          <span>{safePct}%</span>
+        </div>
+        <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+          <motion.div
+            className="h-full bg-emerald-500"
+            animate={{ width: `${safePct}%` }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+          />
+        </div>
       </div>
 
       {/* Skeleton cards */}

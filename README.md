@@ -1,78 +1,54 @@
-# RepoPilot AI
+# RepoPilot Website (Hackathon Submission)
 
-Repository-grounded engineering assistant for **PS7**.
+This branch (`website`) ships the standalone RepoPilot website:
+- Frontend: `website/frontend` (Next.js)
+- Backend: `website/backend` (FastAPI + Gemini)
 
-## Submission Snapshot
+## Live Deployment
 
-- Team: **AlphaByte 3.0**
-- Problem Statement: **PS7 - RepoPilot AI (Repository-Grounded Assistant)**
-- Core stack: `FastAPI` + `ChromaDB` + `Next.js` + `VS Code extension`
-- Grounding: answers must include repository citations (`file_path` + `line_range`)
+- Frontend (public): `https://frontend-azure-chi-43.vercel.app`
+- Backend API: `https://backend-delta-dun-69.vercel.app`
+- Health check: `https://backend-delta-dun-69.vercel.app/health`
 
-## What This Repo Contains
+## What It Does
 
-- `backend/`: ingestion, indexing, retrieval, grounded answer generation, code/test generation APIs
-- `frontend/`: web client for repository connect, indexing, grounded Q&A, generation UI
-- `vscode-extension/`: extension client for editor workflow
-- `tests/`: verification scripts for project-level behavior checks
-- `docs/`: final submission documentation bundle
+1. User submits a public GitHub repo URL.
+2. Backend fetches repository source (supports environments without `git`).
+3. System analyzes structure + key files.
+4. Gemini generates architecture insights.
+5. Frontend renders summary, graphs, and file/dependency views.
 
-## Quick Start (Local)
+## Quick Local Run
 
-### 1. Prerequisites
-
-- Python 3.11+
-- Node.js 20+
-- Git
-
-### 2. Configure environment
+### Backend
 
 ```bash
+cd website/backend
+pip install -r requirements.txt
 copy .env.example .env
+# set GEMINI_API_KEY in .env
+uvicorn app.main:app --reload --port 8001
 ```
 
-Set required keys in `.env`:
-
-- `GEMINI_API_KEY` (or OpenAI embeddings)
-- `OPENAI_API_KEY` with Groq-compatible base URL (as configured)
-
-### 3. Run backend
+### Frontend
 
 ```bash
-start_backend.bat
-```
-
-Backend health: `http://localhost:8000/health`
-
-### 4. Run frontend
-
-```bash
-cd frontend
+cd website/frontend
 npm install
 npm run dev
 ```
 
-Frontend: `http://localhost:3000`
+Then open `http://localhost:3000`.
 
-## API Surface
+## Key Notes for Judges
 
-- `POST /repo/load`
-- `GET /repo/status`
-- `POST /repo/index`
-- `POST /chat/ask`
-- `POST /chat/generate`
-- `POST /chat/pytest`
+- Analyze flow includes real-time progress percentage.
+- Backend is deployed with Gemini key configured.
+- Repository fetch supports fallback archive download when `git` binary is unavailable.
+- Default repository size limit is now `250MB` (configurable with `MAX_REPO_SIZE_MB`).
 
-## Final Submission Docs
+## Submission Docs
 
-- `docs/FINAL_SUBMISSION_PS7.md`
-- `docs/REPO_STRUCTURE.md`
+- `docs/HACKATHON_SUBMISSION.md` (primary)
 - `docs/DEMO_CHECKLIST.md`
-- `REPOPILOT_ASSESSMENT.md`
-- `ASSUMPTIONS.md`
-- `EXPLAIN.md`
-
-## Notes
-
-- Deployability is included but not relied upon for PS7 evaluation.
-- Grounding and explainability are the primary acceptance criteria.
+- `website/website.md` (product/architecture notes)

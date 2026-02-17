@@ -1,28 +1,30 @@
-# 🎨 RepoPilot Frontend
+# RepoPilot Website Frontend
 
-The Next.js user interface for **RepoPilot** - the engineering tool that navigates your codebase.
+Next.js frontend for repository architecture analysis.
 
-## 🚀 Quick Start
+## Run Locally
 
 ```bash
-# Install dependencies
 npm install
-
-# Run development server
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to start chatting.
+Open `http://localhost:3000`.
 
-## 🏗️ Structure
+## Environment
 
-- `src/app/page.tsx`: Main chat interface & state logic.
-- `src/app/layout.tsx`: Global styles & metadata.
-- `next.config.ts`: Proxy configuration for backend API.
+- `NEXT_PUBLIC_API_URL` (optional): explicit backend base URL.
+- `BACKEND_URL` (optional): server-side rewrite target for `/api/:path*`.
 
-## 🔧 Configuration
+If both are missing, local fallback is `http://localhost:8001`.
 
-The frontend connects to the backend via `NEXT_PUBLIC_API_URL` (or proxies `/api` to `localhost:8000` in dev).
+## Main Routes
 
----
-Part of the [RepoPilot](https://github.com/yourusername/repopilot) monorepo.
+- `/` landing page
+- `/analyze` repository analyzer
+- `/dashboard` advanced workflow UI
+
+## Notes
+
+- Analyze page has live loading percentage + progress bar.
+- `next.config.ts` uses `.next-runtime` locally and default `.next` on Vercel.

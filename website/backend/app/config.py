@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     gemini_chat_model: str = "gemini-2.0-flash"
     
     # Repo constraints
-    max_repo_size_mb: int = Field(default=100, validation_alias="MAX_REPO_SIZE_MB")
+    max_repo_size_mb: int = Field(default=250, validation_alias="MAX_REPO_SIZE_MB")
     clone_timeout_seconds: int = Field(default=60, validation_alias="CLONE_TIMEOUT_SECONDS")
     
     # Rate limiting

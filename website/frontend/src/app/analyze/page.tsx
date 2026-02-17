@@ -23,6 +23,7 @@ function AnalyzeContent() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
+  const [loadingPct, setLoadingPct] = useState(0);
   const [activeTab, setActiveTab] = useState<"overview" | "graph" | "files" | "deps">("overview");
   const [copied, setCopied] = useState(false);
 
@@ -31,20 +32,36 @@ function AnalyzeContent() {
     setData(null);
     setIsLoading(true);
     setLoadingStep(0);
+    setLoadingPct(1);
 
-    // Simulate step progression (real steps happen on backend)
-    const stepTimer = setInterval(() => {
-      setLoadingStep((s) => Math.min(s + 1, 3));
-    }, 3000);
+    // Smooth real-time progress feedback while backend analysis runs.
+    let currentPct = 1;
+    const startedAt = Date.now();
+    const progressTimer = setInterval(() => {
+      const elapsedSec = (Date.now() - startedAt) / 1000;
+      const targetPct =
+        elapsedSec < 3
+          ? 5 + elapsedSec * 12
+          : elapsedSec < 8
+            ? 40 + (elapsedSec - 3) * 6
+            : 70 + Math.min((elapsedSec - 8) * 3, 25);
+      currentPct = Math.max(currentPct, Math.min(95, targetPct));
+      setLoadingPct(Math.floor(currentPct));
+      setLoadingStep(
+        currentPct < 25 ? 0 : currentPct < 55 ? 1 : currentPct < 85 ? 2 : 3
+      );
+    }, 200);
 
     try {
       const result = await analyzeRepo({ github_url: url });
+      setLoadingPct(100);
+      setLoadingStep(3);
       setData(result);
       setActiveTab("overview");
     } catch (e: any) {
       setError(e.message || "Analysis failed. Please check the URL and try again.");
     } finally {
-      clearInterval(stepTimer);
+      clearInterval(progressTimer);
       setIsLoading(false);
     }
   }, []);
@@ -151,7 +168,7 @@ function AnalyzeContent() {
         )}
 
         {/* Loading */}
-        {isLoading && <LoadingState step={loadingStep} />}
+        {isLoading && <LoadingState step={loadingStep} progressPct={loadingPct} />}
 
         {/* Results */}
         {data && !isLoading && (
